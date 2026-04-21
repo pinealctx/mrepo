@@ -1,0 +1,104 @@
+package cmd
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/pinealctx/mrepo/internal/config"
+	"github.com/pinealctx/mrepo/internal/git"
+
+	"github.com/spf13/cobra"
+)
+
+var scanCmd = &cobra.Command{
+	Use:   "scan",
+	Short: "Scan for Git repos not yet in config",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		addAll, _ := cmd.Flags().GetBool("add")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		found, err := git.ScanGitRepos(ctx, rootDir)
+		if err != nil {
+			return err
+		}
+
+		cfgPath, cfgErr := config.FindConfigFile(rootDir)
+		var cfg *config.Config
+		if cfgErr == nil {
+			cfg, _ = config.Load(cfgPath)
+		} else {
+			cfg = config.New()
+		}
+
+		var newRepos []string
+		for _, path := range found {
+			name := config.RepoNameFromPath(path)
+			if _, exists := cfg.Repos[name]; !exists {
+				newRepos = append(newRepos, path)
+			}
+		}
+
+		if jsonOutput {
+			return printScanJSON(found, newRepos)
+		}
+
+		if len(newRepos) == 0 {
+			fmt.Println("All Git repos are already tracked.")
+			return nil
+		}
+
+		fmt.Printf("Found %d untracked repo(s):\n", len(newRepos))
+		for _, path := range newRepos {
+			fmt.Printf("  - %s\n", path)
+		}
+
+		if addAll {
+			return addScannedRepos(cfgPath, cfg, newRepos)
+		}
+
+		fmt.Println("\nUse --add to add them all, or 'mrepo add <path>' individually.")
+		return nil
+	},
+}
+
+func addScannedRepos(cfgPath string, cfg *config.Config, repos []string) error {
+	for _, path := range repos {
+		name := config.RepoNameFromPath(path)
+		_ = cfg.AddRepo(name, path, "")
+		fmt.Printf("  Added %s\n", name)
+	}
+
+	if cfgPath == "" {
+		cfgPath = config.ConfigPath(rootDir, config.FormatTOML)
+	}
+	return cfg.Save(cfgPath)
+}
+
+func printScanJSON(found []string, newRepos []string) error {
+	type scanResult struct {
+		All    []string `json:"all"`
+		New    []string `json:"new"`
+		Count  int      `json:"count"`
+		NewCount int    `json:"new_count"`
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(scanResult{
+		All:      found,
+		New:      newRepos,
+		Count:    len(found),
+		NewCount: len(newRepos),
+	})
+}
+
+func init() {
+	scanCmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
+	scanCmd.Flags().Bool("add", false, "add all found repos to config")
+	rootCmd.AddCommand(scanCmd)
+}

@@ -1,0 +1,63 @@
+# https://taskfile.dev
+
+version: "3"
+
+tasks:
+  lint:install:
+    desc: Install golangci-lint
+    cmds:
+      - go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+  lint:
+    desc: Run linters
+    cmds:
+      - golangci-lint run --config=".golangci.yml" --timeout=5m
+
+  lint:fix:
+    desc: Run linters and fix issues
+    cmds:
+      - golangci-lint run --config=".golangci.yml" --timeout=5m --fix
+
+  build:
+    desc: Build binary
+    cmds:
+      - go build -v .
+    sources:
+      - ./**/*.go
+      - go.mod
+
+  run:
+    desc: Build and run
+    cmds:
+      - task: build
+      - ./mrepo{{exeExt}} {{.CLI_ARGS}}
+
+  test:
+    desc: Run tests
+    cmds:
+      - go test -race -failfast ./...
+
+  fmt:
+    desc: Run gofumpt
+    cmds:
+      - gofumpt -w .
+
+  install:
+    desc: Install the binary
+    cmds:
+      - go install -v .
+
+  release:
+    desc: Create and push a new tag
+    vars:
+      NEXT:
+        sh: git describe --tags --abbrev=0 2>/dev/null | sed 's/v//' | awk -F. '{printf "v%d.%d.%d", $$1, $$2+1, 0}'
+    prompt: "This will release {{.NEXT}}. Continue?"
+    preconditions:
+      - sh: '[ $(git symbolic-ref --short HEAD) = "main" ]'
+        msg: Not on main branch
+      - sh: "[ $(git status --porcelain=2 | wc -l) = 0 ]"
+        msg: "Git is dirty"
+    cmds:
+      - git tag -a -m "{{.NEXT}}" {{.NEXT}}
+      - git push origin {{.NEXT}}
