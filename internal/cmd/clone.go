@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"time"
@@ -36,12 +37,14 @@ var cloneCmd = &cobra.Command{
 			if repo.Remote == "" {
 				continue
 			}
-			absPath := rootDir + "/" + repo.Path
+			absPath := filepath.Join(rootDir, repo.Path)
 			if _, err := os.Stat(absPath); err == nil && !force {
 				continue
 			}
 			if force && err == nil {
-				_ = os.RemoveAll(absPath)
+				if rmErr := os.RemoveAll(absPath); rmErr != nil {
+					return fmt.Errorf("remove %s: %w", absPath, rmErr)
+				}
 			}
 			specs[name] = git.CloneSpec{
 				Path:   repo.Path,

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -118,20 +118,20 @@ func GetStatus(ctx context.Context, name, repoPath string) *RepoStatus {
 		x := line[0]
 		y := line[1]
 		switch {
+		case x == 'U' || y == 'U':
+			s.Worktree = StatusConflicted
+			return s
 		case x == '?' && y == '?':
 			if s.Worktree < StatusUntracked {
 				s.Worktree = StatusUntracked
 			}
-		case x == 'U' || y == 'U':
-			s.Worktree = StatusConflicted
-			return s
-		case y == 'M' || y == 'A' || y == 'D' || y == 'R':
-			if s.Worktree < StatusDirty {
-				s.Worktree = StatusDirty
-			}
 		case x == 'M' || x == 'A' || x == 'D' || x == 'R':
 			if s.Worktree < StatusStaged {
 				s.Worktree = StatusStaged
+			}
+		case y == 'M' || y == 'A' || y == 'D' || y == 'R':
+			if s.Worktree < StatusDirty {
+				s.Worktree = StatusDirty
 			}
 		}
 	}
@@ -170,7 +170,7 @@ func Pull(ctx context.Context, name, repoPath string) *PullResult {
 	out, err := gitCmd(ctx, repoPath, "pull", "--ff-only")
 	r := &PullResult{Name: name, Path: repoPath, Output: out}
 	if err != nil {
-		r.Error = fmt.Errorf("%s", out)
+		r.Error = fmt.Errorf("pull: %s", out)
 	}
 	return r
 }
@@ -179,7 +179,7 @@ func Fetch(ctx context.Context, name, repoPath string) *PullResult {
 	out, err := gitCmd(ctx, repoPath, "fetch", "--all")
 	r := &PullResult{Name: name, Path: repoPath, Output: out}
 	if err != nil {
-		r.Error = fmt.Errorf("%s", out)
+		r.Error = fmt.Errorf("fetch: %s", out)
 	}
 	return r
 }
@@ -199,6 +199,28 @@ type CloneResult struct {
 	Error  error
 }
 
+// validateCloneTarget checks that path is within rootDir and remote looks like a URL.
+func validateCloneTarget(rootDir, relPath, remote string) error {
+	if strings.HasPrefix(relPath, "-") {
+		return fmt.Errorf("invalid path %q: must not start with '-'", relPath)
+	}
+	absPath, err := filepath.Abs(filepath.Join(rootDir, relPath))
+	if err != nil {
+		return fmt.Errorf("invalid path %q: %w", relPath, err)
+	}
+	rootAbs, err := filepath.Abs(rootDir)
+	if err != nil {
+		return fmt.Errorf("invalid root %q: %w", rootDir, err)
+	}
+	if !strings.HasPrefix(absPath, rootAbs+string(filepath.Separator)) && absPath != rootAbs {
+		return fmt.Errorf("path %q escapes root directory", relPath)
+	}
+	if remote != "" && !strings.Contains(remote, "://") && !strings.Contains(remote, "@") {
+		return fmt.Errorf("invalid remote %q: must be a URL or SSH address", remote)
+	}
+	return nil
+}
+
 // Clone clones a single repo. If the target directory already exists, it skips.
 func Clone(ctx context.Context, name string, spec CloneSpec) *CloneResult {
 	targetPath := spec.Path
@@ -209,147 +231,85 @@ func Clone(ctx context.Context, name string, spec CloneSpec) *CloneResult {
 		return r
 	}
 
-	args := []string{"clone", spec.Remote, targetPath}
+	args := []string{"clone"}
 	if spec.Branch != "" {
-		args = []string{"clone", "--branch", spec.Branch, spec.Remote, targetPath}
+		args = append(args, "--branch", spec.Branch)
 	}
+	args = append(args, "--", spec.Remote, targetPath)
 
 	cmd := exec.CommandContext(ctx, "git", args...)
 	out, err := cmd.CombinedOutput()
 	r.Output = strings.TrimSpace(string(out))
 	if err != nil {
-		r.Error = fmt.Errorf("%s", r.Output)
+		r.Error = fmt.Errorf("clone: %s", r.Output)
 	}
 	return r
 }
 
-func GetStatuses(ctx context.Context, rootDir string, repos map[string]string, parallel int) []*RepoStatus {
+// parallelDo runs f for each entry in items using bounded parallelism.
+// It collects results into a pre-allocated slice in deterministic order.
+func parallelDo[T any](ctx context.Context, items map[string]string, parallel int, f func(ctx context.Context, name string) *T) []*T {
 	if parallel <= 0 {
 		parallel = 4
 	}
 
-	results := make([]*RepoStatus, len(repos))
-	var mu sync.Mutex
-	idx := 0
+	results := make([]*T, len(items))
+	var idx atomic.Int64
 
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.SetLimit(parallel)
 
-	for name, relPath := range repos {
-		name, relPath := name, relPath
-		i := idx
-		idx++
+	for name := range items {
+		name := name
+		i := int(idx.Add(1)) - 1
 
 		eg.Go(func() error {
-			absPath := filepath.Join(rootDir, relPath)
-			s := GetStatus(egCtx, name, absPath)
-
-			mu.Lock()
-			results[i] = s
-			mu.Unlock()
+			r := f(egCtx, name)
+			results[i] = r
 			return nil
 		})
 	}
 
 	_ = eg.Wait()
 	return results
+}
+
+func GetStatuses(ctx context.Context, rootDir string, repos map[string]string, parallel int) []*RepoStatus {
+	return parallelDo(ctx, repos, parallel, func(ctx context.Context, name string) *RepoStatus {
+		absPath := filepath.Join(rootDir, repos[name])
+		return GetStatus(ctx, name, absPath)
+	})
 }
 
 func PullAll(ctx context.Context, rootDir string, repos map[string]string, parallel int) []*PullResult {
-	if parallel <= 0 {
-		parallel = 4
-	}
-
-	results := make([]*PullResult, len(repos))
-	var mu sync.Mutex
-	idx := 0
-
-	eg, egCtx := errgroup.WithContext(ctx)
-	eg.SetLimit(parallel)
-
-	for name, relPath := range repos {
-		name, relPath := name, relPath
-		i := idx
-		idx++
-
-		eg.Go(func() error {
-			absPath := filepath.Join(rootDir, relPath)
-			r := Pull(egCtx, name, absPath)
-
-			mu.Lock()
-			results[i] = r
-			mu.Unlock()
-			return nil
-		})
-	}
-
-	_ = eg.Wait()
-	return results
+	return parallelDo(ctx, repos, parallel, func(ctx context.Context, name string) *PullResult {
+		absPath := filepath.Join(rootDir, repos[name])
+		return Pull(ctx, name, absPath)
+	})
 }
 
 func FetchAll(ctx context.Context, rootDir string, repos map[string]string, parallel int) []*PullResult {
-	if parallel <= 0 {
-		parallel = 4
-	}
-
-	results := make([]*PullResult, len(repos))
-	var mu sync.Mutex
-	idx := 0
-
-	eg, egCtx := errgroup.WithContext(ctx)
-	eg.SetLimit(parallel)
-
-	for name, relPath := range repos {
-		name, relPath := name, relPath
-		i := idx
-		idx++
-
-		eg.Go(func() error {
-			absPath := filepath.Join(rootDir, relPath)
-			r := Fetch(egCtx, name, absPath)
-
-			mu.Lock()
-			results[i] = r
-			mu.Unlock()
-			return nil
-		})
-	}
-
-	_ = eg.Wait()
-	return results
+	return parallelDo(ctx, repos, parallel, func(ctx context.Context, name string) *PullResult {
+		absPath := filepath.Join(rootDir, repos[name])
+		return Fetch(ctx, name, absPath)
+	})
 }
 
 func CloneAll(ctx context.Context, rootDir string, specs map[string]CloneSpec, parallel int) []*CloneResult {
-	if parallel <= 0 {
-		parallel = 4
+	return parallelDo(ctx, toNameMap(specs), parallel, func(ctx context.Context, name string) *CloneResult {
+		spec := specs[name]
+		absTarget := filepath.Join(rootDir, spec.Path)
+		s := CloneSpec{Path: absTarget, Remote: spec.Remote, Branch: spec.Branch}
+		return Clone(ctx, name, s)
+	})
+}
+
+func toNameMap(specs map[string]CloneSpec) map[string]string {
+	m := make(map[string]string, len(specs))
+	for name := range specs {
+		m[name] = specs[name].Path
 	}
-
-	results := make([]*CloneResult, len(specs))
-	var mu sync.Mutex
-	idx := 0
-
-	eg, egCtx := errgroup.WithContext(ctx)
-	eg.SetLimit(parallel)
-
-	for name, spec := range specs {
-		name, spec := name, spec
-		i := idx
-		idx++
-
-		eg.Go(func() error {
-			absTarget := filepath.Join(rootDir, spec.Path)
-			s := CloneSpec{Path: absTarget, Remote: spec.Remote, Branch: spec.Branch}
-			r := Clone(egCtx, name, s)
-
-			mu.Lock()
-			results[i] = r
-			mu.Unlock()
-			return nil
-		})
-	}
-
-	_ = eg.Wait()
-	return results
+	return m
 }
 
 func ScanGitRepos(ctx context.Context, rootDir string) ([]string, error) {
@@ -365,20 +325,21 @@ func ScanGitRepos(ctx context.Context, rootDir string) ([]string, error) {
 			return nil
 		}
 
-		// Skip common non-project directories.
 		base := filepath.Base(path)
-		if d.IsDir() && (base == ".git" || base == "node_modules" || base == "vendor" || base == ".idea" || base == ".vscode") {
-			return filepath.SkipDir
-		}
 
-		// Found a Git repo.
+		// Detect Git repo BEFORE skipping .git directories.
 		if d.IsDir() && base == ".git" {
 			repoPath := filepath.Dir(path)
 			relPath, relErr := filepath.Rel(rootDir, repoPath)
 			if relErr != nil || relPath == "." {
-				return nil
+				return filepath.SkipDir
 			}
 			repos = append(repos, filepath.ToSlash(relPath))
+			return filepath.SkipDir
+		}
+
+		// Skip common non-project directories.
+		if d.IsDir() && (base == "node_modules" || base == "vendor" || base == ".idea" || base == ".vscode") {
 			return filepath.SkipDir
 		}
 

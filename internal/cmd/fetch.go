@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"runtime"
 	"sort"
 	"time"
@@ -44,6 +46,10 @@ var fetchCmd = &cobra.Command{
 			return results[i].Name < results[j].Name
 		})
 
+		if jsonOutput {
+			return printFetchJSON(results, skipped)
+		}
+
 		for _, r := range results {
 			if r.Error != nil {
 				fmt.Printf("  x %s: %s\n", r.Name, r.Error)
@@ -61,6 +67,33 @@ var fetchCmd = &cobra.Command{
 	},
 }
 
+func printFetchJSON(results []*git.PullResult, skipped []string) error {
+	type jsonFetch struct {
+		Name    string `json:"name"`
+		Path    string `json:"path"`
+		Output  string `json:"output,omitempty"`
+		Error   string `json:"error,omitempty"`
+		Skipped bool   `json:"skipped,omitempty"`
+	}
+
+	var out []jsonFetch
+	for _, r := range results {
+		jf := jsonFetch{Name: r.Name, Path: r.Path, Output: r.Output}
+		if r.Error != nil {
+			jf.Error = r.Error.Error()
+		}
+		out = append(out, jf)
+	}
+	for _, name := range skipped {
+		out = append(out, jsonFetch{Name: name, Skipped: true})
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
+
 func init() {
+	fetchCmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	rootCmd.AddCommand(fetchCmd)
 }

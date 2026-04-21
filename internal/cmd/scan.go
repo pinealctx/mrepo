@@ -29,11 +29,13 @@ var scanCmd = &cobra.Command{
 		}
 
 		cfgPath, cfgErr := config.FindConfigFile(rootDir)
-		var cfg *config.Config
+		cfg := config.New()
 		if cfgErr == nil {
-			cfg, _ = config.Load(cfgPath)
-		} else {
-			cfg = config.New()
+			loaded, loadErr := config.Load(cfgPath)
+			if loadErr != nil {
+				return fmt.Errorf("parse config: %w", loadErr)
+			}
+			cfg = loaded
 		}
 
 		var newRepos []string

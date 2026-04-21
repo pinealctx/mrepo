@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pinealctx/mrepo/internal/config"
+	"github.com/pinealctx/mrepo/internal/git"
 
 	"github.com/spf13/cobra"
 )
@@ -31,19 +34,40 @@ var addCmd = &cobra.Command{
 			return err
 		}
 
-		if err := cfg.AddRepo(name, repoPath, "", "", desc); err != nil {
+		// Auto-detect remote and branch from the existing repo.
+		absPath := filepath.Join(rootDir, repoPath)
+		var remote, branch string
+		if _, statErr := os.Stat(absPath); statErr == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			info := git.GetRepoInfo(ctx, absPath)
+			remote = info.Remote
+			branch = info.Branch
+		}
+
+		if err := cfg.AddRepo(name, repoPath, remote, branch, desc); err != nil {
 			if !force {
 				return err
 			}
 			delete(cfg.Repos, name)
-			_ = cfg.AddRepo(name, repoPath, "", "", desc)
+			if err := cfg.AddRepo(name, repoPath, remote, branch, desc); err != nil {
+				return err
+			}
 		}
 
 		if err := cfg.Save(cfgPath); err != nil {
 			return err
 		}
 
-		fmt.Printf("Added repo %q -> %s\n", name, repoPath)
+		fmt.Printf("Added repo %q -> %s", name, repoPath)
+		if remote != "" {
+			fmt.Printf(" (remote: %s", remote)
+			if branch != "" {
+				fmt.Printf(", branch: %s", branch)
+			}
+			fmt.Print(")")
+		}
+		fmt.Println()
 		return nil
 	},
 }
@@ -72,16 +96,17 @@ var removeCmd = &cobra.Command{
 			return err
 		}
 
-		if deleteDir {
+		if deleteDir && force {
 			absPath := filepath.Join(rootDir, repo.Path)
-			if force {
-				fmt.Printf("Removing directory: %s\n", absPath)
-				if err := os.RemoveAll(absPath); err != nil {
-					return fmt.Errorf("remove directory: %w", err)
-				}
-			} else {
-				fmt.Printf("Directory not removed (use --force to delete): %s\n", absPath)
+			fmt.Printf("Removing directory: %s\n", absPath)
+			if err := os.RemoveAll(absPath); err != nil {
+				return fmt.Errorf("remove directory: %w", err)
 			}
+		} else if deleteDir {
+			// Re-add the repo so the user can retry with --force.
+			_ = cfg.AddRepo(name, repo.Path, repo.Remote, repo.Branch, repo.Description)
+			_ = cfg.Save(cfgPath)
+			return fmt.Errorf("--delete requires --force to actually remove the directory (repo untouched)")
 		}
 
 		if err := cfg.Save(cfgPath); err != nil {
@@ -96,8 +121,8 @@ var removeCmd = &cobra.Command{
 func init() {
 	addCmd.Flags().String("desc", "", "repo description")
 	addCmd.Flags().Bool("force", false, "overwrite if already exists")
-	removeCmd.Flags().Bool("delete", false, "also remove the directory")
-	removeCmd.Flags().Bool("force", false, "actually delete the directory (requires --delete)")
+	removeCmd.Flags().Bool("delete", false, "also remove the directory (requires --force)")
+	removeCmd.Flags().Bool("force", false, "confirm directory deletion (required by --delete)")
 
 	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(removeCmd)

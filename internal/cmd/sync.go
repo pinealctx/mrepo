@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"time"
@@ -40,7 +41,7 @@ var syncCmd = &cobra.Command{
 		toPull := make(map[string]string)
 
 		for name, repo := range cfg.Repos {
-			absPath := rootDir + "/" + repo.Path
+			absPath := filepath.Join(rootDir, repo.Path)
 			if _, err := os.Stat(absPath); os.IsNotExist(err) {
 				if repo.Remote != "" {
 					toClone[name] = git.CloneSpec{
@@ -93,7 +94,7 @@ var syncCmd = &cobra.Command{
 
 		// Repos with no remote and missing on disk.
 		for name, repo := range cfg.Repos {
-			absPath := rootDir + "/" + repo.Path
+			absPath := filepath.Join(rootDir, repo.Path)
 			if _, err := os.Stat(absPath); os.IsNotExist(err) && repo.Remote == "" {
 				allResults = append(allResults, syncRepoResult{
 					Name:   name,

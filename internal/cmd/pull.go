@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
@@ -16,7 +18,7 @@ import (
 )
 
 func isDirMissing(rootDir, relPath string) bool {
-	absPath := rootDir + "/" + relPath
+	absPath := filepath.Join(rootDir, relPath)
 	_, err := os.Stat(absPath)
 	return os.IsNotExist(err)
 }
@@ -93,11 +95,12 @@ func printPullJSON(results []*git.PullResult) error {
 	return enc.Encode(out)
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
+func truncate(s string, maxRunes int) string {
+	if utf8.RuneCountInString(s) <= maxRunes {
 		return s
 	}
-	return s[:max-3] + "..."
+	runes := []rune(s)
+	return string(runes[:maxRunes-3]) + "..."
 }
 
 func init() {
