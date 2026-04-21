@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-mrepo is a Go CLI and TUI tool for managing multiple Git repositories within a monorepo workspace. It can clone missing repos from config, run parallel status/pull/fetch operations, and provides an interactive Bubble Tea terminal dashboard.
+mrepo is a Go CLI and TUI tool for managing multiple Git repositories within a monorepo workspace. It supports cloning repos from config, parallel status/pull/fetch operations, running arbitrary commands across repos (`forall`), group-based filtering, and an interactive Bubble Tea terminal dashboard.
 
 Module path: `github.com/pinealctx/mrepo`
 
@@ -12,7 +12,7 @@ Module path: `github.com/pinealctx/mrepo`
 
 ```bash
 go build .                                    # Build binary
-go test -race -failfast ./...                 # Run tests
+go test -failfast ./...                       # Run tests
 golangci-lint run --config=.golangci.yml --timeout=5m  # Lint
 gofumpt -w .                                  # Format
 go run . --root /path/to/monorepo status      # Run against a workspace
@@ -27,16 +27,19 @@ Release: push a semver tag (`vX.Y.Z`) — GoReleaser builds cross-platform binar
 ```
 main.go                        Entry point → cmd.Execute()
 internal/
-  cmd/                         Cobra commands: root, status, pull, fetch, clone, sync, add, remove, scan, tui
-  config/                      Config loading/saving (TOML + YAML), repo registry with remote/branch
-  git/                         Git CLI wrappers (status, clone, pull, fetch, scan, repo info)
+  cmd/                         Cobra commands: root, status, pull, fetch, clone, sync,
+                               forall, add, remove, scan, tui, version
+  config/                      Config loading/saving (TOML + YAML), repo registry,
+                               validation on Load (path/remote format checks)
+  git/                         Git CLI wrappers (status, clone, pull, fetch, scan,
+                               repo info, log), parallelDo generic helper
   tui/                         Bubble Tea TUI with lipgloss v2 styling
   version/                     Version string, injected via -ldflags at release
 ```
 
 ### Config structure
 
-Each repo entry has `path`, `remote` (clone URL), `branch` (optional), and `description` (optional). `remote` enables `clone` and `sync` to bootstrap repos that don't exist locally.
+Each repo entry has `path`, `remote` (clone URL, optional), `branch` (optional), and `description` (optional). Config is validated on load: paths must not be empty or start with `-`; remotes must look like URLs or SSH addresses.
 
 ```toml
 version = 1
@@ -47,24 +50,39 @@ remote = "https://github.com/org/backend.git"
 branch = "main"
 ```
 
+Groups can be defined to filter repos via `--group` flag:
+
+```toml
+[groups.services]
+repos = ["backend", "frontend"]
+```
+
 ### Data flow
 
-1. `cmd/` loads config via `config.FindConfigFile()` → `config.Load()` (auto-detects `.repos.toml` / `.repos.yml` / `.repos.yaml`)
-2. Builds a `map[string]string` of `{repoName: relativePath}` for git operations
-3. Calls `git.GetStatuses()` / `git.PullAll()` / `git.CloneAll()` which fan out via `errgroup` with `runtime.NumCPU()` workers
-4. Each worker shells out to `git` via `exec.CommandContext`
-5. Results sorted alphabetically and rendered (table/JSON/TUI)
+1. `cmd/` loads config via `config.FindConfigFile()` → `config.Load()` (auto-detects `.repos.toml` / `.repos.yml` / `.repos.yaml`, validates entries)
+2. `filterRepos(cfg)` applies `--group` filtering if set
+3. Builds a `map[string]string` of `{repoName: relativePath}` for git operations
+4. Calls `git.GetStatuses()` / `git.PullAll()` / `git.CloneAll()` which fan out via `parallelDo` generic helper using `errgroup` with `runtime.NumCPU()` workers and `atomic.Int64` index
+5. Each worker shells out to `git` via `exec.CommandContext`
+6. Results sorted alphabetically and rendered (table/JSON/TUI)
 
 ### Key CLI commands
 
 | Command | Description |
 |---------|-------------|
 | `mrepo status` | Show status (branch, clean/dirty/missing, ahead/behind) |
-| `mrepo clone` | Clone repos that don't exist locally (`--force` to re-clone) |
+| `mrepo clone` | Clone repos not yet on disk (`--force`, `--depth N`) |
 | `mrepo sync` | Clone missing + pull existing in one step |
 | `mrepo pull` | Pull existing repos (skips missing) |
 | `mrepo fetch` | Fetch refs for existing repos |
+| `mrepo forall -- <cmd>` | Run a command in each repo |
 | `mrepo scan` | Discover untracked repos (`--add` auto-detects remote/branch) |
+
+### Global flags
+
+- `--root` — workspace root (default `.`)
+- `--group` — filter by group name (all commands)
+- `--json` — JSON output on reporting commands
 
 ### Key dependencies
 
@@ -73,13 +91,19 @@ branch = "main"
 - `golang.org/x/sync/errgroup` — bounded parallelism
 - `github.com/pelletier/go-toml/v2` + `gopkg.in/yaml.v3` — config formats
 
+### Key patterns
+
+- `parallelDo[T]` generic in `git/operations.go` eliminates parallel worker boilerplate
+- `filterRepos()` in `cmd/root.go` centralizes `--group` filtering for all commands
+- `truncate()` in `cmd/pull.go` counts runes (not bytes) for safe UTF-8 truncation
+- `validateCloneTarget()` prevents path traversal and flag injection in clone operations
+
 ### Conventions
 
 - Conventional Commits: `<type>(<scope>): <description>` — imperative mood, lowercase, no period, max 72 chars
 - No backward compatibility — project is in initial development
 - Go style: Effective Go + Uber Go Style Guide. `PascalCase`/`camelCase`, acronyms as `UserID`
-- All commands support `--json` for scripting; `--root` sets workspace root (default `.`)
-- Parallel operations use the errgroup + pre-allocated slice + mutex pattern
+- All reporting commands support `--json`; parallel operations use `errgroup` + `atomic.Int64`
 
 ## Pre-commit Hooks
 
