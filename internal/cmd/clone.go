@@ -56,7 +56,7 @@ var cloneCmd = &cobra.Command{
 		}
 
 		if len(specs) == 0 {
-			fmt.Println("All repos already exist locally.")
+			fmt.Println(infoStyle.Render("  All repos already exist locally."))
 			return nil
 		}
 
@@ -74,9 +74,9 @@ var cloneCmd = &cobra.Command{
 
 		for _, r := range results {
 			if r.Error != nil {
-				fmt.Printf("  x %s: %s\n", r.Name, r.Error)
+				fmt.Printf("  %s %-20s %s\n", errorIcon(), r.Name, errorStyle.Render(truncate(r.Error.Error(), 80)))
 			} else {
-				fmt.Printf("  + %s: %s\n", r.Name, truncate(r.Output, 80))
+				fmt.Printf("  %s %-20s %s\n", cloneIcon(), r.Name, dimStyle.Render(truncate(r.Output, 80)))
 			}
 		}
 		return nil

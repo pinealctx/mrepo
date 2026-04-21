@@ -59,13 +59,13 @@ var addCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("Added repo %q -> %s", name, repoPath)
+		fmt.Printf("  %s %s %s %s", successIcon(), boldStyle.Render("Added"), accentStyle.Render(name), dimStyle.Render("→ "+repoPath))
 		if remote != "" {
-			fmt.Printf(" (remote: %s", remote)
+			fmt.Printf(" %s", dimStyle.Render(fmt.Sprintf("(remote: %s", remote)))
 			if branch != "" {
 				fmt.Printf(", branch: %s", branch)
 			}
-			fmt.Print(")")
+			fmt.Print(dimStyle.Render(")"))
 		}
 		fmt.Println()
 		return nil
@@ -98,7 +98,7 @@ var removeCmd = &cobra.Command{
 
 		if deleteDir && force {
 			absPath := filepath.Join(rootDir, repo.Path)
-			fmt.Printf("Removing directory: %s\n", absPath)
+			fmt.Printf("  %s %s\n", warnIcon(), warnStyle.Render("Removing directory: "+absPath))
 			if err := os.RemoveAll(absPath); err != nil {
 				return fmt.Errorf("remove directory: %w", err)
 			}
@@ -113,7 +113,7 @@ var removeCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("Removed repo %q\n", name)
+		fmt.Printf("  %s %s %s\n", errorIcon(), boldStyle.Render("Removed"), accentStyle.Render(name))
 		return nil
 	},
 }

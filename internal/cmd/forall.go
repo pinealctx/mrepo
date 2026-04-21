@@ -64,11 +64,11 @@ var forallCmd = &cobra.Command{
 
 		for _, r := range results {
 			if r.Error != "" {
-				fmt.Printf("  x %s: %s\n", r.Name, r.Error)
+				fmt.Printf("  %s %-20s %s\n", errorIcon(), r.Name, errorStyle.Render(truncate(r.Error, 80)))
 			} else if r.Output != "" {
-				fmt.Printf("  + %s:\n%s\n", r.Name, indent(r.Output))
+				fmt.Printf("  %s %s:\n%s\n", successIcon(), accentStyle.Render(r.Name), dimStyle.Render(indent(r.Output)))
 			} else {
-				fmt.Printf("  + %s: (no output)\n", r.Name)
+				fmt.Printf("  %s %-20s %s\n", successIcon(), r.Name, dimStyle.Render("(no output)"))
 			}
 		}
 		return nil

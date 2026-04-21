@@ -52,16 +52,16 @@ var fetchCmd = &cobra.Command{
 
 		for _, r := range results {
 			if r.Error != nil {
-				fmt.Printf("  x %s: %s\n", r.Name, r.Error)
+				fmt.Printf("  %s %-20s %s\n", errorIcon(), r.Name, errorStyle.Render(truncate(r.Error.Error(), 80)))
 			} else if r.Output == "" {
-				fmt.Printf("  ok %s: up to date\n", r.Name)
+				fmt.Printf("  %s %-20s %s\n", infoIcon(), r.Name, dimStyle.Render("up to date"))
 			} else {
-				fmt.Printf("  ok %s: %s\n", r.Name, truncate(r.Output, 80))
+				fmt.Printf("  %s %-20s %s\n", successIcon(), r.Name, dimStyle.Render(truncate(r.Output, 80)))
 			}
 		}
 
 		for _, name := range skipped {
-			fmt.Printf("  - %s: not cloned (use 'mrepo sync')\n", name)
+			fmt.Printf("  %s %-20s %s\n", warnIcon(), name, dimStyle.Render("not cloned (use 'mrepo sync')"))
 		}
 		return nil
 	},

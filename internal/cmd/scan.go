@@ -51,20 +51,20 @@ var scanCmd = &cobra.Command{
 		}
 
 		if len(newRepos) == 0 {
-			fmt.Println("All Git repos are already tracked.")
+			fmt.Println(infoStyle.Render("  All Git repos are already tracked."))
 			return nil
 		}
 
-		fmt.Printf("Found %d untracked repo(s):\n", len(newRepos))
+		fmt.Printf("  Found %s untracked repo(s):\n", boldStyle.Render(fmt.Sprintf("%d", len(newRepos))))
 		for _, path := range newRepos {
-			fmt.Printf("  - %s\n", path)
+			fmt.Printf("  %s %s\n", infoIcon(), dimStyle.Render(path))
 		}
 
 		if addAll {
 			return addScannedRepos(ctx, cfgPath, cfg, newRepos)
 		}
 
-		fmt.Println("\nUse --add to add them all, or 'mrepo add <path>' individually.")
+		fmt.Printf("\n  %s\n", dimStyle.Render("Use --add to add them all, or 'mrepo add <path>' individually."))
 		return nil
 	},
 }
@@ -78,13 +78,13 @@ func addScannedRepos(ctx context.Context, cfgPath string, cfg *config.Config, re
 		info := git.GetRepoInfo(ctx, absPath)
 
 		_ = cfg.AddRepo(name, path, info.Remote, info.Branch, "")
-		fmt.Printf("  Added %s", name)
+		fmt.Printf("  %s %s", successIcon(), accentStyle.Render(name))
 		if info.Remote != "" {
-			fmt.Printf(" (remote: %s", info.Remote)
+			fmt.Printf(" %s", dimStyle.Render(fmt.Sprintf("(remote: %s", info.Remote)))
 			if info.Branch != "" {
 				fmt.Printf(", branch: %s", info.Branch)
 			}
-			fmt.Print(")")
+			fmt.Print(dimStyle.Render(")"))
 		}
 		fmt.Println()
 	}

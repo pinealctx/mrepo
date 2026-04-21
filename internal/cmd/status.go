@@ -52,9 +52,10 @@ var statusCmd = &cobra.Command{
 }
 
 func printStatusTable(statuses []*git.RepoStatus) {
-	// header
-	fmt.Printf("  %-20s %-20s %-10s %s\n", "REPO", "BRANCH", "STATUS", "AHEAD/BEHIND")
-	fmt.Println(strings.Repeat("-", 72))
+	// Header.
+	header := fmt.Sprintf("  %-20s %-20s %-10s %s", "REPO", "BRANCH", "STATUS", "AHEAD/BEHIND")
+	fmt.Println(boldStyle.Render(header))
+	fmt.Println(dimStyle.Render(strings.Repeat("─", 72)))
 
 	missingCount := 0
 	for _, s := range statuses {
@@ -62,43 +63,58 @@ func printStatusTable(statuses []*git.RepoStatus) {
 			missingCount++
 		}
 
-		aheadBehind := fmt.Sprintf("↑%d ↓%d", s.Ahead, s.Behind)
-		if s.Ahead == 0 && s.Behind == 0 {
-			aheadBehind = "-"
-		}
-
-		statusStr := s.StatusString()
-		var statusIcon string
-		switch s.Worktree {
-		case git.StatusClean:
-			statusIcon = "\u25cb" // ○
-		case git.StatusMissing:
-			statusIcon = "!" // !
-		default:
-			statusIcon = "\u25cf" // ●
-		}
-
 		if s.Worktree == git.StatusMissing {
-			fmt.Printf("  %s %-18s %-20s\n", statusIcon, s.Name, "MISSING")
+			fmt.Printf("  %s %-20s %s\n",
+				warnIcon(),
+				accentStyle.Render(s.Name),
+				missingStyle.Render("MISSING"),
+			)
 			continue
 		}
 
 		if s.Error != nil {
-			fmt.Printf("  %s %-18s %s\n", statusIcon, s.Name, s.Error)
+			fmt.Printf("  %s %-20s %s\n",
+				errorIcon(),
+				s.Name,
+				errorStyle.Render(s.Error.Error()),
+			)
 			continue
 		}
 
-		fmt.Printf("  %s %-18s %-20s %-10s %s\n",
-			statusIcon,
-			s.Name,
-			s.Branch,
-			statusStr,
+		// Status icon.
+		icon := cleanStyle.Render("○")
+		if s.Worktree != git.StatusClean {
+			icon = dirtyStyle.Render("●")
+		}
+
+		// Ahead/behind.
+		aheadBehind := dimStyle.Render("-")
+		if s.Ahead > 0 || s.Behind > 0 {
+			ahead := s.Ahead
+			behind := s.Behind
+			if ahead > 0 && behind > 0 {
+				aheadBehind = fmt.Sprintf("%s %s", successStyle.Render(fmt.Sprintf("↑%d", ahead)), warnStyle.Render(fmt.Sprintf("↓%d", behind)))
+			} else if ahead > 0 {
+				aheadBehind = successStyle.Render(fmt.Sprintf("↑%d", ahead))
+			} else {
+				aheadBehind = warnStyle.Render(fmt.Sprintf("↓%d", behind))
+			}
+		}
+
+		fmt.Printf("  %s %-20s %-20s %-10s %s\n",
+			icon,
+			accentStyle.Render(s.Name),
+			dimStyle.Render(s.Branch),
+			formatStatus(s.StatusString()),
 			aheadBehind,
 		)
 	}
 
 	if missingCount > 0 {
-		fmt.Printf("\n  %d repo(s) missing. Use 'mrepo sync' or 'mrepo clone' to download.\n", missingCount)
+		fmt.Printf("\n  %s %s\n",
+			warnStyle.Render(fmt.Sprintf("%d repo(s) missing.", missingCount)),
+			dimStyle.Render("Use 'mrepo sync' or 'mrepo clone' to download."),
+		)
 	}
 }
 

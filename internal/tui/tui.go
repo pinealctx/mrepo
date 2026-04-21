@@ -443,16 +443,14 @@ func (m *model) renderList() string {
 	b.WriteString("\n")
 
 	for i, name := range m.items {
-		cursor := "  "
+		marker := " "
 		if i == m.cursor {
-			cursor = selectedStyle.Render("> ")
+			marker = selectedStyle.Render(">")
 		}
 
 		detail, ok := m.details[name]
 		if !ok {
-			line := fmt.Sprintf("%s %-20s loading...", cursor, name)
-			b.WriteString(line)
-			b.WriteString("\n")
+			fmt.Fprintf(&b, " %s  %-20s loading...\n", marker, name)
 			continue
 		}
 
@@ -467,15 +465,12 @@ func (m *model) renderList() string {
 			if i == m.cursor {
 				nameStr = selectedStyle.Render(name)
 			}
-			line := fmt.Sprintf("%s ! %-18s %-20s\n", cursor, nameStr, missingStyle.Render("MISSING"))
-			b.WriteString(line)
+			fmt.Fprintf(&b, " %s  %-20s %s\n", marker, nameStr, missingStyle.Render("MISSING"))
 			continue
 		}
 
 		if s.Error != nil {
-			line := fmt.Sprintf("%s %-20s %s", cursor, name, errorStyle.Render(s.Error.Error()))
-			b.WriteString(line)
-			b.WriteString("\n")
+			fmt.Fprintf(&b, " %s  %-20s %s\n", marker, name, errorStyle.Render(s.Error.Error()))
 			continue
 		}
 
@@ -523,11 +518,8 @@ func (m *model) renderList() string {
 			}
 		}
 
-		line := fmt.Sprintf("%s %s %-20s %-20s %s %s",
-			cursor, icon, nameStr, s.Branch, statusText, aheadBehind)
-		b.WriteString(line)
-		b.WriteString(pullInfo)
-		b.WriteString("\n")
+		fmt.Fprintf(&b, " %s %s %-20s %-20s %-10s %s%s\n",
+			marker, icon, nameStr, s.Branch, statusText, aheadBehind, pullInfo)
 	}
 
 	if m.pulling {

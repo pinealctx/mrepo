@@ -118,13 +118,13 @@ var syncCmd = &cobra.Command{
 
 		for _, r := range allResults {
 			if r.Error != "" {
-				fmt.Printf("  x %s [%s]: %s\n", r.Name, r.Action, r.Error)
+				fmt.Printf("  %s %-20s %s %s\n", errorIcon(), r.Name, dimStyle.Render(fmt.Sprintf("[%s]", r.Action)), errorStyle.Render(truncate(r.Error, 60)))
 			} else {
 				output := truncate(r.Output, 60)
 				if output == "" {
 					output = "ok"
 				}
-				fmt.Printf("  + %s [%s]: %s\n", r.Name, r.Action, output)
+				fmt.Printf("  %s %-20s %s %s\n", successIcon(), r.Name, dimStyle.Render(fmt.Sprintf("[%s]", r.Action)), dimStyle.Render(output))
 			}
 		}
 		return nil
