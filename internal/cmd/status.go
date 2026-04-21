@@ -30,7 +30,7 @@ var statusCmd = &cobra.Command{
 		}
 
 		repos := make(map[string]string)
-		for name, repo := range cfg.Repos {
+		for name, repo := range filterRepos(cfg) {
 			repos[name] = repo.Path
 		}
 

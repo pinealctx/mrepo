@@ -30,7 +30,7 @@ var fetchCmd = &cobra.Command{
 
 		repos := make(map[string]string)
 		var skipped []string
-		for name, repo := range cfg.Repos {
+		for name, repo := range filterRepos(cfg) {
 			if isDirMissing(rootDir, repo.Path) {
 				skipped = append(skipped, name)
 				continue

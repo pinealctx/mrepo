@@ -189,6 +189,7 @@ type CloneSpec struct {
 	Path   string
 	Remote string
 	Branch string
+	Depth  int // 0 = full clone, >0 = shallow clone
 }
 
 // CloneResult holds the outcome of a single clone operation.
@@ -234,6 +235,9 @@ func Clone(ctx context.Context, name string, spec CloneSpec) *CloneResult {
 	args := []string{"clone"}
 	if spec.Branch != "" {
 		args = append(args, "--branch", spec.Branch)
+	}
+	if spec.Depth > 0 {
+		args = append(args, "--depth", strconv.Itoa(spec.Depth))
 	}
 	args = append(args, "--", spec.Remote, targetPath)
 
@@ -299,7 +303,7 @@ func CloneAll(ctx context.Context, rootDir string, specs map[string]CloneSpec, p
 	return parallelDo(ctx, toNameMap(specs), parallel, func(ctx context.Context, name string) *CloneResult {
 		spec := specs[name]
 		absTarget := filepath.Join(rootDir, spec.Path)
-		s := CloneSpec{Path: absTarget, Remote: spec.Remote, Branch: spec.Branch}
+		s := CloneSpec{Path: absTarget, Remote: spec.Remote, Branch: spec.Branch, Depth: spec.Depth}
 		return Clone(ctx, name, s)
 	})
 }

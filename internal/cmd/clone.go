@@ -30,10 +30,11 @@ var cloneCmd = &cobra.Command{
 		}
 
 		force, _ := cmd.Flags().GetBool("force")
+		depth, _ := cmd.Flags().GetInt("depth")
 
 		// Collect repos that need cloning.
 		specs := make(map[string]git.CloneSpec)
-		for name, repo := range cfg.Repos {
+		for name, repo := range filterRepos(cfg) {
 			if repo.Remote == "" {
 				continue
 			}
@@ -50,6 +51,7 @@ var cloneCmd = &cobra.Command{
 				Path:   repo.Path,
 				Remote: repo.Remote,
 				Branch: repo.Branch,
+				Depth:  depth,
 			}
 		}
 
@@ -106,5 +108,6 @@ func printCloneJSON(results []*git.CloneResult) error {
 func init() {
 	cloneCmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	cloneCmd.Flags().Bool("force", false, "re-clone even if directory exists")
+	cloneCmd.Flags().Int("depth", 0, "create a shallow clone with given depth (0 = full)")
 	rootCmd.AddCommand(cloneCmd)
 }

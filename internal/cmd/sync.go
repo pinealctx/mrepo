@@ -27,6 +27,7 @@ var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Clone missing repos and pull existing ones",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		depth, _ := cmd.Flags().GetInt("depth")
 		cfgPath, err := config.FindConfigFile(rootDir)
 		if err != nil {
 			return err
@@ -40,7 +41,7 @@ var syncCmd = &cobra.Command{
 		toClone := make(map[string]git.CloneSpec)
 		toPull := make(map[string]string)
 
-		for name, repo := range cfg.Repos {
+		for name, repo := range filterRepos(cfg) {
 			absPath := filepath.Join(rootDir, repo.Path)
 			if _, err := os.Stat(absPath); os.IsNotExist(err) {
 				if repo.Remote != "" {
@@ -48,6 +49,7 @@ var syncCmd = &cobra.Command{
 						Path:   repo.Path,
 						Remote: repo.Remote,
 						Branch: repo.Branch,
+						Depth:  depth,
 					}
 				}
 			} else {
@@ -93,7 +95,7 @@ var syncCmd = &cobra.Command{
 		}
 
 		// Repos with no remote and missing on disk.
-		for name, repo := range cfg.Repos {
+		for name, repo := range filterRepos(cfg) {
 			absPath := filepath.Join(rootDir, repo.Path)
 			if _, err := os.Stat(absPath); os.IsNotExist(err) && repo.Remote == "" {
 				allResults = append(allResults, syncRepoResult{
@@ -131,5 +133,6 @@ var syncCmd = &cobra.Command{
 
 func init() {
 	syncCmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
+	syncCmd.Flags().Int("depth", 0, "shallow clone depth (0 = full)")
 	rootCmd.AddCommand(syncCmd)
 }

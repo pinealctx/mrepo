@@ -38,7 +38,7 @@ var pullCmd = &cobra.Command{
 
 		repos := make(map[string]string)
 		var skipped []string
-		for name, repo := range cfg.Repos {
+		for name, repo := range filterRepos(cfg) {
 			if isDirMissing(rootDir, repo.Path) {
 				skipped = append(skipped, name)
 				continue
@@ -100,7 +100,11 @@ func truncate(s string, maxRunes int) string {
 		return s
 	}
 	runes := []rune(s)
-	return string(runes[:maxRunes-3]) + "..."
+	cut := maxRunes - 3
+	if cut < 0 {
+		cut = 0
+	}
+	return string(runes[:cut]) + "..."
 }
 
 func init() {

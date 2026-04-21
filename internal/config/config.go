@@ -91,6 +91,19 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	// Validate repo entries.
+	for name, repo := range cfg.Repos {
+		if repo.Path == "" {
+			return nil, fmt.Errorf("repo %q has empty path", name)
+		}
+		if strings.HasPrefix(repo.Path, "-") {
+			return nil, fmt.Errorf("repo %q has invalid path %q: must not start with '-'", name, repo.Path)
+		}
+		if repo.Remote != "" && !strings.Contains(repo.Remote, "://") && !strings.Contains(repo.Remote, "@") {
+			return nil, fmt.Errorf("repo %q has invalid remote %q: must be a URL or SSH address", name, repo.Remote)
+		}
+	}
+
 	return cfg, nil
 }
 
