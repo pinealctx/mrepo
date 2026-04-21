@@ -15,6 +15,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func isDirMissing(rootDir, relPath string) bool {
+	absPath := rootDir + "/" + relPath
+	_, err := os.Stat(absPath)
+	return os.IsNotExist(err)
+}
+
 var pullCmd = &cobra.Command{
 	Use:   "pull",
 	Short: "Pull latest changes for all repos",
@@ -29,7 +35,12 @@ var pullCmd = &cobra.Command{
 		}
 
 		repos := make(map[string]string)
+		var skipped []string
 		for name, repo := range cfg.Repos {
+			if isDirMissing(rootDir, repo.Path) {
+				skipped = append(skipped, name)
+				continue
+			}
 			repos[name] = repo.Path
 		}
 
@@ -47,10 +58,14 @@ var pullCmd = &cobra.Command{
 
 		for _, r := range results {
 			if r.Error != nil {
-				fmt.Printf("  ✗ %s: %s\n", r.Name, r.Error)
+				fmt.Printf("  x %s: %s\n", r.Name, r.Error)
 			} else {
-				fmt.Printf("  ✓ %s: %s\n", r.Name, truncate(r.Output, 80))
+				fmt.Printf("  + %s: %s\n", r.Name, truncate(r.Output, 80))
 			}
+		}
+
+		for _, name := range skipped {
+			fmt.Printf("  - %s: not cloned (use 'mrepo sync')\n", name)
 		}
 		return nil
 	},

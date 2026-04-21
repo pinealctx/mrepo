@@ -3,6 +3,8 @@ package git
 import (
 	"context"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -20,17 +22,18 @@ const (
 	StatusStaged
 	StatusUntracked
 	StatusConflicted
+	StatusMissing
 )
 
 type RepoStatus struct {
-	Name       string
-	Path       string
-	Branch     string
-	Remote     string
-	Ahead      int
-	Behind     int
-	Worktree   WorktreeStatus
-	Error      error
+	Name     string
+	Path     string
+	Branch   string
+	Remote   string
+	Ahead    int
+	Behind   int
+	Worktree WorktreeStatus
+	Error    error
 }
 
 func (s *RepoStatus) IsClean() bool {
@@ -52,6 +55,8 @@ func (s *RepoStatus) StatusString() string {
 		return "untracked"
 	case StatusConflicted:
 		return "conflicted"
+	case StatusMissing:
+		return "missing"
 	default:
 		return "unknown"
 	}
@@ -66,6 +71,12 @@ func gitCmd(ctx context.Context, repoPath string, args ...string) (string, error
 
 func GetStatus(ctx context.Context, name, repoPath string) *RepoStatus {
 	s := &RepoStatus{Name: name, Path: repoPath}
+
+	// Check if directory exists.
+	if _, err := os.Stat(repoPath); os.IsNotExist(err) {
+		s.Worktree = StatusMissing
+		return s
+	}
 
 	branch, err := gitCmd(ctx, repoPath, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
@@ -128,6 +139,26 @@ func GetStatus(ctx context.Context, name, repoPath string) *RepoStatus {
 	return s
 }
 
+// RepoInfo holds metadata detected from an existing Git repository on disk.
+type RepoInfo struct {
+	Remote string
+	Branch string
+}
+
+// GetRepoInfo detects the remote URL (origin) and current branch of a repo.
+func GetRepoInfo(ctx context.Context, repoPath string) RepoInfo {
+	var info RepoInfo
+	info.Remote, _ = gitCmd(ctx, repoPath, "remote", "get-url", "origin")
+	info.Branch, _ = gitCmd(ctx, repoPath, "rev-parse", "--abbrev-ref", "HEAD")
+	return info
+}
+
+// Log runs git log and returns oneline output.
+func Log(ctx context.Context, repoPath string, max int) (string, error) {
+	n := fmt.Sprintf("-%d", max)
+	return gitCmd(ctx, repoPath, "log", "--oneline", n)
+}
+
 type PullResult struct {
 	Name   string
 	Path   string
@@ -149,6 +180,45 @@ func Fetch(ctx context.Context, name, repoPath string) *PullResult {
 	r := &PullResult{Name: name, Path: repoPath, Output: out}
 	if err != nil {
 		r.Error = fmt.Errorf("%s", out)
+	}
+	return r
+}
+
+// CloneSpec describes a repo to clone.
+type CloneSpec struct {
+	Path   string
+	Remote string
+	Branch string
+}
+
+// CloneResult holds the outcome of a single clone operation.
+type CloneResult struct {
+	Name   string
+	Path   string
+	Output string
+	Error  error
+}
+
+// Clone clones a single repo. If the target directory already exists, it skips.
+func Clone(ctx context.Context, name string, spec CloneSpec) *CloneResult {
+	targetPath := spec.Path
+	r := &CloneResult{Name: name, Path: targetPath}
+
+	if _, err := os.Stat(targetPath); err == nil {
+		r.Output = "already exists, skipped"
+		return r
+	}
+
+	args := []string{"clone", spec.Remote, targetPath}
+	if spec.Branch != "" {
+		args = []string{"clone", "--branch", spec.Branch, spec.Remote, targetPath}
+	}
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	out, err := cmd.CombinedOutput()
+	r.Output = strings.TrimSpace(string(out))
+	if err != nil {
+		r.Error = fmt.Errorf("%s", r.Output)
 	}
 	return r
 }
@@ -217,28 +287,111 @@ func PullAll(ctx context.Context, rootDir string, repos map[string]string, paral
 	return results
 }
 
-func ScanGitRepos(ctx context.Context, rootDir string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "find", rootDir, "-maxdepth", "2", "-name", ".git", "-type", "d")
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("scan for git repos: %w", err)
+func FetchAll(ctx context.Context, rootDir string, repos map[string]string, parallel int) []*PullResult {
+	if parallel <= 0 {
+		parallel = 4
 	}
 
+	results := make([]*PullResult, len(repos))
+	var mu sync.Mutex
+	idx := 0
+
+	eg, egCtx := errgroup.WithContext(ctx)
+	eg.SetLimit(parallel)
+
+	for name, relPath := range repos {
+		name, relPath := name, relPath
+		i := idx
+		idx++
+
+		eg.Go(func() error {
+			absPath := filepath.Join(rootDir, relPath)
+			r := Fetch(egCtx, name, absPath)
+
+			mu.Lock()
+			results[i] = r
+			mu.Unlock()
+			return nil
+		})
+	}
+
+	_ = eg.Wait()
+	return results
+}
+
+func CloneAll(ctx context.Context, rootDir string, specs map[string]CloneSpec, parallel int) []*CloneResult {
+	if parallel <= 0 {
+		parallel = 4
+	}
+
+	results := make([]*CloneResult, len(specs))
+	var mu sync.Mutex
+	idx := 0
+
+	eg, egCtx := errgroup.WithContext(ctx)
+	eg.SetLimit(parallel)
+
+	for name, spec := range specs {
+		name, spec := name, spec
+		i := idx
+		idx++
+
+		eg.Go(func() error {
+			absTarget := filepath.Join(rootDir, spec.Path)
+			s := CloneSpec{Path: absTarget, Remote: spec.Remote, Branch: spec.Branch}
+			r := Clone(egCtx, name, s)
+
+			mu.Lock()
+			results[i] = r
+			mu.Unlock()
+			return nil
+		})
+	}
+
+	_ = eg.Wait()
+	return results
+}
+
+func ScanGitRepos(ctx context.Context, rootDir string) ([]string, error) {
 	var repos []string
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		repoPath := filepath.Dir(line)
-		relPath, err := filepath.Rel(rootDir, repoPath)
+
+	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			continue
+			return nil
 		}
-		if relPath == "." {
-			continue
+
+		// Skip the root directory itself.
+		if path == rootDir {
+			return nil
 		}
-		repos = append(repos, filepath.ToSlash(relPath))
+
+		// Skip common non-project directories.
+		base := filepath.Base(path)
+		if d.IsDir() && (base == ".git" || base == "node_modules" || base == "vendor" || base == ".idea" || base == ".vscode") {
+			return filepath.SkipDir
+		}
+
+		// Found a Git repo.
+		if d.IsDir() && base == ".git" {
+			repoPath := filepath.Dir(path)
+			relPath, relErr := filepath.Rel(rootDir, repoPath)
+			if relErr != nil || relPath == "." {
+				return nil
+			}
+			repos = append(repos, filepath.ToSlash(relPath))
+			return filepath.SkipDir
+		}
+
+		// Limit depth to 2 levels.
+		rel, _ := filepath.Rel(rootDir, path)
+		if rel != "" && strings.Count(rel, string(filepath.Separator)) >= 2 {
+			return filepath.SkipDir
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan for git repos: %w", err)
 	}
 
 	return repos, nil

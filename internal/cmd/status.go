@@ -56,7 +56,12 @@ func printStatusTable(statuses []*git.RepoStatus) {
 	fmt.Printf("  %-20s %-20s %-10s %s\n", "REPO", "BRANCH", "STATUS", "AHEAD/BEHIND")
 	fmt.Println(strings.Repeat("-", 72))
 
+	missingCount := 0
 	for _, s := range statuses {
+		if s.Worktree == git.StatusMissing {
+			missingCount++
+		}
+
 		aheadBehind := fmt.Sprintf("↑%d ↓%d", s.Ahead, s.Behind)
 		if s.Ahead == 0 && s.Behind == 0 {
 			aheadBehind = "-"
@@ -67,8 +72,15 @@ func printStatusTable(statuses []*git.RepoStatus) {
 		switch s.Worktree {
 		case git.StatusClean:
 			statusIcon = "\u25cb" // ○
+		case git.StatusMissing:
+			statusIcon = "!" // !
 		default:
 			statusIcon = "\u25cf" // ●
+		}
+
+		if s.Worktree == git.StatusMissing {
+			fmt.Printf("  %s %-18s %-20s\n", statusIcon, s.Name, "MISSING")
+			continue
 		}
 
 		if s.Error != nil {
@@ -84,19 +96,23 @@ func printStatusTable(statuses []*git.RepoStatus) {
 			aheadBehind,
 		)
 	}
+
+	if missingCount > 0 {
+		fmt.Printf("\n  %d repo(s) missing. Use 'mrepo sync' or 'mrepo clone' to download.\n", missingCount)
+	}
 }
 
 func printStatusJSON(statuses []*git.RepoStatus) error {
 	type jsonStatus struct {
-		Name     string `json:"name"`
-		Path     string `json:"path"`
-		Branch   string `json:"branch,omitempty"`
-		Remote   string `json:"remote,omitempty"`
-		Ahead    int    `json:"ahead"`
-		Behind   int    `json:"behind"`
-		Status   string `json:"status"`
-		Clean    bool   `json:"clean"`
-		Error    string `json:"error,omitempty"`
+		Name   string `json:"name"`
+		Path   string `json:"path"`
+		Branch string `json:"branch,omitempty"`
+		Remote string `json:"remote,omitempty"`
+		Ahead  int    `json:"ahead"`
+		Behind int    `json:"behind"`
+		Status string `json:"status"`
+		Clean  bool   `json:"clean"`
+		Error  string `json:"error,omitempty"`
 	}
 
 	out := make([]jsonStatus, len(statuses))

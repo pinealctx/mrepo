@@ -19,7 +19,9 @@ const (
 
 type Repo struct {
 	Path        string `toml:"path" yaml:"path"`
-	Description string `toml:"description" yaml:"description"`
+	Remote      string `toml:"remote,omitempty" yaml:"remote,omitempty"`
+	Branch      string `toml:"branch,omitempty" yaml:"branch,omitempty"`
+	Description string `toml:"description,omitempty" yaml:"description,omitempty"`
 }
 
 type Group struct {
@@ -27,8 +29,8 @@ type Group struct {
 }
 
 type Config struct {
-	Version int              `toml:"version" yaml:"version"`
-	Repos   map[string]*Repo `toml:"repos" yaml:"repos"`
+	Version int               `toml:"version" yaml:"version"`
+	Repos   map[string]*Repo  `toml:"repos" yaml:"repos"`
 	Groups  map[string]*Group `toml:"groups" yaml:"groups"`
 }
 
@@ -107,15 +109,17 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0o644)
 }
 
-func (c *Config) AddRepo(name, repoPath, desc string) error {
+func (c *Config) AddRepo(name, repoPath, remote, branch, desc string) error {
 	if _, exists := c.Repos[name]; exists {
 		return fmt.Errorf("repo %q already exists", name)
 	}
 	c.Repos[name] = &Repo{
 		Path:        filepath.ToSlash(repoPath),
+		Remote:      remote,
+		Branch:      branch,
 		Description: desc,
 	}
 	return nil

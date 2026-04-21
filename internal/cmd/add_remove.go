@@ -31,12 +31,12 @@ var addCmd = &cobra.Command{
 			return err
 		}
 
-		if err := cfg.AddRepo(name, repoPath, desc); err != nil {
+		if err := cfg.AddRepo(name, repoPath, "", "", desc); err != nil {
 			if !force {
 				return err
 			}
 			delete(cfg.Repos, name)
-			_ = cfg.AddRepo(name, repoPath, desc)
+			_ = cfg.AddRepo(name, repoPath, "", "", desc)
 		}
 
 		if err := cfg.Save(cfgPath); err != nil {

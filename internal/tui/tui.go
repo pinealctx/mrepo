@@ -3,7 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
-	"os/exec"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -12,8 +12,8 @@ import (
 	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"charm.land/lipgloss/v2"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 type tab int
@@ -29,9 +29,9 @@ type repoDetail struct {
 }
 
 type model struct {
-	rootDir  string
-	repos    map[string]string
-	config   *config.Config
+	rootDir string
+	repos   map[string]string
+	config  *config.Config
 
 	cursor   int
 	items    []string
@@ -44,8 +44,11 @@ type model struct {
 	width   int
 	height  int
 
-	pulling  bool
+	pulling     bool
 	pullResults map[string]string
+
+	cloning      bool
+	cloneResults map[string]string
 }
 
 var (
@@ -68,6 +71,9 @@ var (
 			Foreground(lipgloss.Color("#F59E0B"))
 
 	errorStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#EF4444"))
+
+	missingStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#EF4444"))
 
 	stagedStyle = lipgloss.NewStyle().
@@ -94,6 +100,14 @@ type pullMsg struct {
 	results map[string]string
 }
 
+type cloneMsg struct {
+	results map[string]string
+}
+
+type syncMsg struct {
+	results map[string]string
+}
+
 func refreshStatus(rootDir string, repos map[string]string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -113,7 +127,15 @@ func pullAll(rootDir string, repos map[string]string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
-		results := git.PullAll(ctx, rootDir, repos, runtime.NumCPU())
+		// Only pull repos that exist on disk.
+		existing := make(map[string]string)
+		for name, path := range repos {
+			if !isMissing(rootDir, path) {
+				existing[name] = path
+			}
+		}
+
+		results := git.PullAll(ctx, rootDir, existing, runtime.NumCPU())
 		out := make(map[string]string, len(results))
 		for _, r := range results {
 			if r.Error != nil {
@@ -126,18 +148,129 @@ func pullAll(rootDir string, repos map[string]string) tea.Cmd {
 	}
 }
 
+func fetchAll(rootDir string, repos map[string]string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		existing := make(map[string]string)
+		for name, path := range repos {
+			if !isMissing(rootDir, path) {
+				existing[name] = path
+			}
+		}
+
+		results := git.FetchAll(ctx, rootDir, existing, runtime.NumCPU())
+		details := make(map[string]*repoDetail, len(results))
+		// After fetch, refresh full status.
+		statuses := git.GetStatuses(ctx, rootDir, repos, runtime.NumCPU())
+		for _, s := range statuses {
+			details[s.Name] = &repoDetail{Status: s}
+		}
+		return statusMsg{details: details}
+	}
+}
+
+func cloneMissing(rootDir string, cfg *config.Config, repos map[string]string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+
+		specs := make(map[string]git.CloneSpec)
+		for name, repo := range cfg.Repos {
+			if repo.Remote == "" {
+				continue
+			}
+			if !isMissing(rootDir, repo.Path) {
+				continue
+			}
+			specs[name] = git.CloneSpec{
+				Path:   repo.Path,
+				Remote: repo.Remote,
+				Branch: repo.Branch,
+			}
+		}
+
+		if len(specs) == 0 {
+			return cloneMsg{results: map[string]string{}}
+		}
+
+		results := git.CloneAll(ctx, rootDir, specs, runtime.NumCPU())
+		out := make(map[string]string, len(results))
+		for _, r := range results {
+			if r.Error != nil {
+				out[r.Name] = fmt.Sprintf("FAIL: %s", r.Error)
+			} else {
+				out[r.Name] = r.Output
+			}
+		}
+		return cloneMsg{results: out}
+	}
+}
+
+func syncAll(rootDir string, cfg *config.Config, repos map[string]string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+
+		out := make(map[string]string)
+
+		// Clone missing repos.
+		cloneSpecs := make(map[string]git.CloneSpec)
+		for name, repo := range cfg.Repos {
+			if repo.Remote != "" && isMissing(rootDir, repo.Path) {
+				cloneSpecs[name] = git.CloneSpec{
+					Path:   repo.Path,
+					Remote: repo.Remote,
+					Branch: repo.Branch,
+				}
+			}
+		}
+		if len(cloneSpecs) > 0 {
+			cloneResults := git.CloneAll(ctx, rootDir, cloneSpecs, runtime.NumCPU())
+			for _, r := range cloneResults {
+				if r.Error != nil {
+					out[r.Name] = fmt.Sprintf("CLONE FAIL: %s", r.Error)
+				} else {
+					out[r.Name] = "cloned"
+				}
+			}
+		}
+
+		// Pull existing repos.
+		existing := make(map[string]string)
+		for name, path := range repos {
+			if !isMissing(rootDir, path) {
+				existing[name] = path
+			}
+		}
+		if len(existing) > 0 {
+			pullResults := git.PullAll(ctx, rootDir, existing, runtime.NumCPU())
+			for _, r := range pullResults {
+				if r.Error != nil {
+					out[r.Name] = fmt.Sprintf("PULL FAIL: %s", r.Error)
+				} else if _, has := out[r.Name]; !has {
+					out[r.Name] = "pulled"
+				}
+			}
+		}
+
+		return syncMsg{results: out}
+	}
+}
+
 func loadLogForRepo(rootDir, relPath string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		absPath := filepath.Join(rootDir, relPath)
-		out, err := runGitLog(ctx, absPath, "log", "--oneline", "-15")
+		log, err := git.Log(ctx, absPath, 15)
 		msg := logMsg{name: filepath.Base(relPath)}
 		if err != nil {
 			msg.err = err.Error()
 		} else {
-			msg.log = out
+			msg.log = log
 		}
 		return msg
 	}
@@ -149,11 +282,10 @@ type logMsg struct {
 	err  string
 }
 
-func runGitLog(ctx context.Context, repoPath string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = repoPath
-	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+func isMissing(rootDir, relPath string) bool {
+	absPath := filepath.Join(rootDir, relPath)
+	_, err := os.Stat(absPath)
+	return os.IsNotExist(err)
 }
 
 func NewModel(rootDir string, cfg *config.Config) model {
@@ -165,12 +297,13 @@ func NewModel(rootDir string, cfg *config.Config) model {
 	names := cfg.SortedRepoNames()
 
 	return model{
-		rootDir:    rootDir,
-		repos:      repos,
-		config:     cfg,
-		items:      names,
-		details:    make(map[string]*repoDetail),
-		pullResults: make(map[string]string),
+		rootDir:      rootDir,
+		repos:        repos,
+		config:       cfg,
+		items:        names,
+		details:      make(map[string]*repoDetail),
+		pullResults:  make(map[string]string),
+		cloneResults: make(map[string]string),
 	}
 }
 
@@ -203,10 +336,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			return m, refreshStatus(m.rootDir, m.repos)
 		case "p":
-			if !m.pulling {
+			if !m.pulling && !m.cloning {
 				m.pulling = true
 				m.pullResults = make(map[string]string)
 				return m, pullAll(m.rootDir, m.repos)
+			}
+		case "f":
+			m.loading = true
+			return m, fetchAll(m.rootDir, m.repos)
+		case "c":
+			if !m.cloning && !m.pulling {
+				m.cloning = true
+				m.cloneResults = make(map[string]string)
+				return m, cloneMissing(m.rootDir, m.config, m.repos)
+			}
+		case "S":
+			if !m.cloning && !m.pulling {
+				m.cloning = true
+				m.cloneResults = make(map[string]string)
+				return m, syncAll(m.rootDir, m.config, m.repos)
 			}
 		case "enter":
 			if len(m.items) > 0 {
@@ -217,12 +365,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.selected = ""
 			m.tab = tabStatus
-		case "f":
-			// fetch all
-			m.loading = true
-			return m, tea.Batch(
-				refreshStatus(m.rootDir, m.repos),
-			)
 		}
 
 	case statusMsg:
@@ -233,6 +375,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pullMsg:
 		m.pulling = false
 		m.pullResults = msg.results
+		return m, refreshStatus(m.rootDir, m.repos)
+
+	case cloneMsg:
+		m.cloning = false
+		m.cloneResults = msg.results
+		return m, refreshStatus(m.rootDir, m.repos)
+
+	case syncMsg:
+		m.cloning = false
+		m.cloneResults = msg.results
 		return m, refreshStatus(m.rootDir, m.repos)
 
 	case logMsg:
@@ -272,7 +424,7 @@ func (m model) View() string {
 	if m.selected != "" {
 		help = helpStyle.Render("[esc] back  [q] quit")
 	} else {
-		help = helpStyle.Render("[s] refresh  [p] pull  [f] fetch  [enter] detail  [q] quit")
+		help = helpStyle.Render("[s] refresh  [p] pull  [f] fetch  [c] clone  [S] sync  [enter] detail  [q] quit")
 	}
 	b.WriteString(help)
 
@@ -306,6 +458,17 @@ func (m *model) renderList() string {
 
 		s := detail.Status
 		if s == nil {
+			continue
+		}
+
+		// Missing repo.
+		if s.Worktree == git.StatusMissing {
+			nameStr := name
+			if i == m.cursor {
+				nameStr = selectedStyle.Render(name)
+			}
+			line := fmt.Sprintf("%s ! %-18s %-20s\n", cursor, nameStr, missingStyle.Render("MISSING"))
+			b.WriteString(line)
 			continue
 		}
 
@@ -343,13 +506,20 @@ func (m *model) renderList() string {
 			nameStr = selectedStyle.Render(name)
 		}
 
-		// Pull result
+		// Pull/clone result
 		pullInfo := ""
-		if r, ok := m.pullResults[name]; ok {
+		if r, has := m.pullResults[name]; has {
 			if strings.HasPrefix(r, "FAIL:") {
 				pullInfo = " " + errorStyle.Render(r)
 			} else {
 				pullInfo = " " + cleanStyle.Render("pulled")
+			}
+		}
+		if r, has := m.cloneResults[name]; has {
+			if strings.HasPrefix(r, "FAIL:") || strings.HasPrefix(r, "CLONE FAIL:") || strings.HasPrefix(r, "PULL FAIL:") {
+				pullInfo = " " + errorStyle.Render(r)
+			} else {
+				pullInfo = " " + cleanStyle.Render(r)
 			}
 		}
 
@@ -363,6 +533,12 @@ func (m *model) renderList() string {
 	if m.pulling {
 		b.WriteString("\n")
 		b.WriteString(dirtyStyle.Render("  Pulling..."))
+		b.WriteString("\n")
+	}
+
+	if m.cloning {
+		b.WriteString("\n")
+		b.WriteString(dirtyStyle.Render("  Syncing..."))
 		b.WriteString("\n")
 	}
 
@@ -383,10 +559,16 @@ func (m *model) renderDetail() string {
 	b.WriteString(box)
 	b.WriteString("\n\n")
 
-	b.WriteString(fmt.Sprintf("  Branch:   %s\n", s.Branch))
-	b.WriteString(fmt.Sprintf("  Remote:   %s\n", s.Remote))
-	b.WriteString(fmt.Sprintf("  Status:   %s\n", s.StatusString()))
-	b.WriteString(fmt.Sprintf("  Ahead:    %d  Behind: %d\n", s.Ahead, s.Behind))
+	if s.Worktree == git.StatusMissing {
+		b.WriteString(missingStyle.Render("  MISSING — not cloned yet"))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	fmt.Fprintf(&b, "  Branch:   %s\n", s.Branch)
+	fmt.Fprintf(&b, "  Remote:   %s\n", s.Remote)
+	fmt.Fprintf(&b, "  Status:   %s\n", s.StatusString())
+	fmt.Fprintf(&b, "  Ahead:    %d  Behind: %d\n", s.Ahead, s.Behind)
 
 	if detail.Log != "" {
 		b.WriteString("\n")

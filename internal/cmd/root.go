@@ -8,15 +8,15 @@ import (
 )
 
 var (
-	rootDir   string
-	format    string
+	rootDir    string
+	format     string
 	jsonOutput bool
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "mrepo",
-	Short: "Monorepo multi-repository manager",
-	Long:  "mrepo manages multiple Git repositories within a monorepo workspace.",
+	Use:           "mrepo",
+	Short:         "Monorepo multi-repository manager",
+	Long:          "mrepo manages multiple Git repositories within a monorepo workspace.",
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }

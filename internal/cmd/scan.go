@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/pinealctx/mrepo/internal/config"
@@ -58,7 +59,7 @@ var scanCmd = &cobra.Command{
 		}
 
 		if addAll {
-			return addScannedRepos(cfgPath, cfg, newRepos)
+			return addScannedRepos(ctx, cfgPath, cfg, newRepos)
 		}
 
 		fmt.Println("\nUse --add to add them all, or 'mrepo add <path>' individually.")
@@ -66,11 +67,24 @@ var scanCmd = &cobra.Command{
 	},
 }
 
-func addScannedRepos(cfgPath string, cfg *config.Config, repos []string) error {
+func addScannedRepos(ctx context.Context, cfgPath string, cfg *config.Config, repos []string) error {
 	for _, path := range repos {
 		name := config.RepoNameFromPath(path)
-		_ = cfg.AddRepo(name, path, "")
-		fmt.Printf("  Added %s\n", name)
+		absPath := filepath.Join(rootDir, path)
+
+		// Auto-detect remote URL and current branch.
+		info := git.GetRepoInfo(ctx, absPath)
+
+		_ = cfg.AddRepo(name, path, info.Remote, info.Branch, "")
+		fmt.Printf("  Added %s", name)
+		if info.Remote != "" {
+			fmt.Printf(" (remote: %s", info.Remote)
+			if info.Branch != "" {
+				fmt.Printf(", branch: %s", info.Branch)
+			}
+			fmt.Print(")")
+		}
+		fmt.Println()
 	}
 
 	if cfgPath == "" {
@@ -81,10 +95,10 @@ func addScannedRepos(cfgPath string, cfg *config.Config, repos []string) error {
 
 func printScanJSON(found []string, newRepos []string) error {
 	type scanResult struct {
-		All    []string `json:"all"`
-		New    []string `json:"new"`
-		Count  int      `json:"count"`
-		NewCount int    `json:"new_count"`
+		All      []string `json:"all"`
+		New      []string `json:"new"`
+		Count    int      `json:"count"`
+		NewCount int      `json:"new_count"`
 	}
 
 	enc := json.NewEncoder(os.Stdout)
@@ -99,6 +113,6 @@ func printScanJSON(found []string, newRepos []string) error {
 
 func init() {
 	scanCmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
-	scanCmd.Flags().Bool("add", false, "add all found repos to config")
+	scanCmd.Flags().Bool("add", false, "add all found repos to config (auto-detect remote and branch)")
 	rootCmd.AddCommand(scanCmd)
 }

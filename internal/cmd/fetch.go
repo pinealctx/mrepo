@@ -3,17 +3,14 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"runtime"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/sync/errgroup"
 )
 
 var fetchCmd = &cobra.Command{
@@ -30,31 +27,19 @@ var fetchCmd = &cobra.Command{
 		}
 
 		repos := make(map[string]string)
+		var skipped []string
 		for name, repo := range cfg.Repos {
+			if isDirMissing(rootDir, repo.Path) {
+				skipped = append(skipped, name)
+				continue
+			}
 			repos[name] = repo.Path
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
-		var results []*git.PullResult
-		var mu sync.Mutex
-		eg, egCtx := errgroup.WithContext(ctx)
-		eg.SetLimit(runtime.NumCPU())
-
-		for name, relPath := range repos {
-			name, relPath := name, relPath
-			eg.Go(func() error {
-				absPath := filepath.Join(rootDir, relPath)
-				r := git.Fetch(egCtx, name, absPath)
-				mu.Lock()
-				results = append(results, r)
-				mu.Unlock()
-				return nil
-			})
-		}
-
-		_ = eg.Wait()
+		results := git.FetchAll(ctx, rootDir, repos, runtime.NumCPU())
 		sort.Slice(results, func(i, j int) bool {
 			return results[i].Name < results[j].Name
 		})
@@ -67,6 +52,10 @@ var fetchCmd = &cobra.Command{
 			} else {
 				fmt.Printf("  ok %s: %s\n", r.Name, truncate(r.Output, 80))
 			}
+		}
+
+		for _, name := range skipped {
+			fmt.Printf("  - %s: not cloned (use 'mrepo sync')\n", name)
 		}
 		return nil
 	},
