@@ -78,6 +78,12 @@ func addScannedRepos(ctx context.Context, cfgPath string, cfg *config.Config, re
 		info := git.GetRepoInfo(ctx, absPath)
 
 		_ = cfg.AddRepo(name, path, info.Remote, info.Branch, "")
+
+		// Add to .gitignore so root repo doesn't track the sub-repo.
+		if err := ensureGitignore(rootDir, path); err != nil {
+			fmt.Printf("  %s %s\n", warnIcon(), dimStyle.Render("warning: could not update .gitignore: "+err.Error()))
+		}
+
 		fmt.Printf("  %s %s", successIcon(), accentStyle.Render(name))
 		if info.Remote != "" {
 			fmt.Printf(" %s", dimStyle.Render(fmt.Sprintf("(remote: %s", info.Remote)))

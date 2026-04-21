@@ -59,6 +59,11 @@ var addCmd = &cobra.Command{
 			return err
 		}
 
+		// Add to .gitignore so root repo doesn't track the sub-repo.
+		if err := ensureGitignore(rootDir, repoPath); err != nil {
+			fmt.Printf("  %s %s\n", warnIcon(), dimStyle.Render("warning: could not update .gitignore: "+err.Error()))
+		}
+
 		fmt.Printf("  %s %s %s %s", successIcon(), boldStyle.Render("Added"), accentStyle.Render(name), dimStyle.Render("→ "+repoPath))
 		if remote != "" {
 			fmt.Printf(" %s", dimStyle.Render(fmt.Sprintf("(remote: %s", remote)))
@@ -111,6 +116,11 @@ var removeCmd = &cobra.Command{
 
 		if err := cfg.Save(cfgPath); err != nil {
 			return err
+		}
+
+		// Remove from .gitignore.
+		if err := removeFromGitignore(rootDir, repo.Path); err != nil {
+			fmt.Printf("  %s %s\n", warnIcon(), dimStyle.Render("warning: could not update .gitignore: "+err.Error()))
 		}
 
 		fmt.Printf("  %s %s %s\n", errorIcon(), boldStyle.Render("Removed"), accentStyle.Render(name))
