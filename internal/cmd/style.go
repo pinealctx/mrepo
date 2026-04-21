@@ -1,8 +1,14 @@
 package cmd
 
 import (
+	"fmt"
+	"path/filepath"
+
 	"charm.land/lipgloss/v2"
 )
+
+// rootStyle styles the root repo entry differently from sub-repos.
+var rootStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7C3AED")).Bold(true)
 
 var (
 	// Semantic colors.
@@ -44,4 +50,19 @@ func formatStatus(status string) string {
 	default:
 		return status
 	}
+}
+
+// displayRepoName returns the human-readable name for a repo.
+// The root repo (".") is shown as the directory basename.
+func displayRepoName(name string) string {
+	if name == rootRepoName {
+		base := filepath.Base(rootDir)
+		return fmt.Sprintf("%s/", base)
+	}
+	return name
+}
+
+// isRootRepo checks if a repo name refers to the root repository.
+func isRootRepo(name string) bool {
+	return name == rootRepoName
 }

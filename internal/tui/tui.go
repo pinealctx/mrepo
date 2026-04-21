@@ -29,9 +29,10 @@ type repoDetail struct {
 }
 
 type model struct {
-	rootDir string
-	repos   map[string]string
-	config  *config.Config
+	rootDir  string
+	rootName string // display name for root repo (e.g., "nexus/")
+	repos    map[string]string
+	config   *config.Config
 
 	cursor   int
 	items    []string
@@ -296,8 +297,12 @@ func NewModel(rootDir string, cfg *config.Config) model {
 
 	names := cfg.SortedRepoNames()
 
+	// Compute root display name (e.g., "nexus/").
+	rootDisplayName := filepath.Base(rootDir) + "/"
+
 	return model{
 		rootDir:      rootDir,
+		rootName:     rootDisplayName,
 		repos:        repos,
 		config:       cfg,
 		items:        names,
@@ -305,6 +310,14 @@ func NewModel(rootDir string, cfg *config.Config) model {
 		pullResults:  make(map[string]string),
 		cloneResults: make(map[string]string),
 	}
+}
+
+// displayName returns a human-friendly name for the repo.
+func (m *model) displayName(name string) string {
+	if name == "." {
+		return m.rootName
+	}
+	return name
 }
 
 func (m model) Init() tea.Cmd {
@@ -450,7 +463,7 @@ func (m *model) renderList() string {
 
 		detail, ok := m.details[name]
 		if !ok {
-			fmt.Fprintf(&b, " %s  %-20s loading...\n", marker, name)
+			fmt.Fprintf(&b, " %s  %-20s loading...\n", marker, m.displayName(name))
 			continue
 		}
 
@@ -461,16 +474,16 @@ func (m *model) renderList() string {
 
 		// Missing repo.
 		if s.Worktree == git.StatusMissing {
-			nameStr := name
+			nameStr := m.displayName(name)
 			if i == m.cursor {
-				nameStr = selectedStyle.Render(name)
+				nameStr = selectedStyle.Render(nameStr)
 			}
 			fmt.Fprintf(&b, " %s  %-20s %s\n", marker, nameStr, missingStyle.Render("MISSING"))
 			continue
 		}
 
 		if s.Error != nil {
-			fmt.Fprintf(&b, " %s  %-20s %s\n", marker, name, errorStyle.Render(s.Error.Error()))
+			fmt.Fprintf(&b, " %s  %-20s %s\n", marker, m.displayName(name), errorStyle.Render(s.Error.Error()))
 			continue
 		}
 
@@ -496,9 +509,9 @@ func (m *model) renderList() string {
 			aheadBehind = dimStyle.Render("-")
 		}
 
-		nameStr := name
+		nameStr := m.displayName(name)
 		if i == m.cursor {
-			nameStr = selectedStyle.Render(name)
+			nameStr = selectedStyle.Render(nameStr)
 		}
 
 		// Pull/clone result
@@ -547,7 +560,7 @@ func (m *model) renderDetail() string {
 
 	s := detail.Status
 
-	box := borderStyle.Render(fmt.Sprintf("  %s (%s)", m.selected, s.Path))
+	box := borderStyle.Render(fmt.Sprintf("  %s (%s)", m.displayName(m.selected), s.Path))
 	b.WriteString(box)
 	b.WriteString("\n\n")
 

@@ -59,15 +59,16 @@ var pullCmd = &cobra.Command{
 		}
 
 		for _, r := range results {
+			dn := displayRepoName(r.Name)
 			if r.Error != nil {
-				fmt.Printf("  %s %-20s %s\n", errorIcon(), r.Name, errorStyle.Render(truncate(r.Error.Error(), 80)))
+				fmt.Printf("  %s %-20s %s\n", errorIcon(), dn, errorStyle.Render(truncate(r.Error.Error(), 80)))
 			} else {
-				fmt.Printf("  %s %-20s %s\n", successIcon(), r.Name, dimStyle.Render(truncate(r.Output, 80)))
+				fmt.Printf("  %s %-20s %s\n", successIcon(), dn, dimStyle.Render(truncate(r.Output, 80)))
 			}
 		}
 
 		for _, name := range skipped {
-			fmt.Printf("  %s %-20s %s\n", warnIcon(), name, dimStyle.Render("not cloned (use 'mrepo sync')"))
+			fmt.Printf("  %s %-20s %s\n", warnIcon(), displayRepoName(name), dimStyle.Render("not cloned (use 'mrepo sync')"))
 		}
 		return nil
 	},

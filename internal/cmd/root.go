@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/pinealctx/mrepo/internal/config"
 
@@ -15,6 +16,9 @@ var (
 	jsonOutput bool
 	groupName  string
 )
+
+// rootRepoName is the special name used for the monorepo root itself.
+const rootRepoName = "."
 
 var rootCmd = &cobra.Command{
 	Use:           "mrepo",
@@ -38,22 +42,41 @@ func Execute() {
 }
 
 // filterRepos returns the repos to operate on, filtered by --group if set.
+// It always includes the root repo (".").
 func filterRepos(cfg *config.Config) map[string]*config.Repo {
-	if groupName == "" {
-		return cfg.Repos
-	}
+	repos := cfg.Repos
 
-	names, err := cfg.RepoNamesForGroup(groupName)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	filtered := make(map[string]*config.Repo, len(names))
-	for _, n := range names {
-		if r, ok := cfg.Repos[n]; ok {
-			filtered[n] = r
+	if groupName != "" {
+		names, err := cfg.RepoNamesForGroup(groupName)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
+
+		filtered := make(map[string]*config.Repo, len(names)+1)
+		for _, n := range names {
+			if r, ok := cfg.Repos[n]; ok {
+				filtered[n] = r
+			}
+		}
+		repos = filtered
 	}
-	return filtered
+
+	// Always include the root repo itself.
+	if isRootGitRepo() {
+		result := make(map[string]*config.Repo, len(repos)+1)
+		result[rootRepoName] = &config.Repo{Path: "."}
+		for name, repo := range repos {
+			result[name] = repo
+		}
+		return result
+	}
+
+	return repos
+}
+
+// isRootGitRepo checks if the root directory contains a .git directory.
+func isRootGitRepo() bool {
+	_, err := os.Stat(filepath.Join(rootDir, ".git"))
+	return err == nil
 }

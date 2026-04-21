@@ -63,12 +63,13 @@ var forallCmd = &cobra.Command{
 		}
 
 		for _, r := range results {
+			dn := displayRepoName(r.Name)
 			if r.Error != "" {
-				fmt.Printf("  %s %-20s %s\n", errorIcon(), r.Name, errorStyle.Render(truncate(r.Error, 80)))
+				fmt.Printf("  %s %-20s %s\n", errorIcon(), dn, errorStyle.Render(truncate(r.Error, 80)))
 			} else if r.Output != "" {
-				fmt.Printf("  %s %s:\n%s\n", successIcon(), accentStyle.Render(r.Name), dimStyle.Render(indent(r.Output)))
+				fmt.Printf("  %s %s:\n%s\n", successIcon(), accentStyle.Render(dn), dimStyle.Render(indent(r.Output)))
 			} else {
-				fmt.Printf("  %s %-20s %s\n", successIcon(), r.Name, dimStyle.Render("(no output)"))
+				fmt.Printf("  %s %-20s %s\n", successIcon(), dn, dimStyle.Render("(no output)"))
 			}
 		}
 		return nil

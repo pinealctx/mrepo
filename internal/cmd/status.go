@@ -63,8 +63,14 @@ func printStatusTable(statuses []*git.RepoStatus) {
 
 	missingCount := 0
 	for _, s := range statuses {
-		if s.Worktree == git.StatusMissing {
+		if s.Worktree == git.StatusMissing && !isRootRepo(s.Name) {
 			missingCount++
+		}
+
+		displayName := displayRepoName(s.Name)
+		nameStyle := accentStyle
+		if isRootRepo(s.Name) {
+			nameStyle = rootStyle
 		}
 
 		// Status icon.
@@ -75,10 +81,10 @@ func printStatusTable(statuses []*git.RepoStatus) {
 			icon = dirtyStyle.Render("●")
 		}
 
-		if s.Worktree == git.StatusMissing {
+		if s.Worktree == git.StatusMissing && !isRootRepo(s.Name) {
 			fmt.Printf("  %s  %s  %s\n",
 				icon,
-				accentStyle.Width(20).Render(s.Name),
+				nameStyle.Width(20).Render(displayName),
 				missingStyle.Render("MISSING"),
 			)
 			continue
@@ -87,7 +93,7 @@ func printStatusTable(statuses []*git.RepoStatus) {
 		if s.Error != nil {
 			fmt.Printf("  %s  %s  %s\n",
 				icon,
-				accentStyle.Width(20).Render(s.Name),
+				nameStyle.Width(20).Render(displayName),
 				errorStyle.Render(s.Error.Error()),
 			)
 			continue
@@ -109,7 +115,7 @@ func printStatusTable(statuses []*git.RepoStatus) {
 
 		fmt.Printf("  %s  %s  %s  %s  %s\n",
 			icon,
-			accentStyle.Width(20).Render(s.Name),
+			nameStyle.Width(20).Render(displayName),
 			dimStyle.Width(20).Render(s.Branch),
 			formatStatus(s.StatusString()),
 			aheadBehind,
