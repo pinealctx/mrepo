@@ -53,8 +53,12 @@ var statusCmd = &cobra.Command{
 
 func printStatusTable(statuses []*git.RepoStatus) {
 	// Header.
-	header := fmt.Sprintf("  %-20s %-20s %-10s %s", "REPO", "BRANCH", "STATUS", "AHEAD/BEHIND")
-	fmt.Println(boldStyle.Render(header))
+	fmt.Printf("  %s  %s  %s  %s\n",
+		boldStyle.Width(20).Render("REPO"),
+		boldStyle.Width(20).Render("BRANCH"),
+		boldStyle.Width(10).Render("STATUS"),
+		boldStyle.Render("AHEAD/BEHIND"),
+	)
 	fmt.Println(dimStyle.Render(strings.Repeat("─", 72)))
 
 	missingCount := 0
@@ -63,48 +67,50 @@ func printStatusTable(statuses []*git.RepoStatus) {
 			missingCount++
 		}
 
+		// Status icon.
+		icon := cleanStyle.Render("○")
 		if s.Worktree == git.StatusMissing {
-			fmt.Printf("  %s %-20s %s\n",
-				warnIcon(),
-				accentStyle.Render(s.Name),
+			icon = warnStyle.Render("!")
+		} else if s.Worktree != git.StatusClean {
+			icon = dirtyStyle.Render("●")
+		}
+
+		if s.Worktree == git.StatusMissing {
+			fmt.Printf("  %s  %s  %s\n",
+				icon,
+				accentStyle.Width(20).Render(s.Name),
 				missingStyle.Render("MISSING"),
 			)
 			continue
 		}
 
 		if s.Error != nil {
-			fmt.Printf("  %s %-20s %s\n",
-				errorIcon(),
-				s.Name,
+			fmt.Printf("  %s  %s  %s\n",
+				icon,
+				accentStyle.Width(20).Render(s.Name),
 				errorStyle.Render(s.Error.Error()),
 			)
 			continue
 		}
 
-		// Status icon.
-		icon := cleanStyle.Render("○")
-		if s.Worktree != git.StatusClean {
-			icon = dirtyStyle.Render("●")
-		}
-
 		// Ahead/behind.
 		aheadBehind := dimStyle.Render("-")
 		if s.Ahead > 0 || s.Behind > 0 {
-			ahead := s.Ahead
-			behind := s.Behind
-			if ahead > 0 && behind > 0 {
-				aheadBehind = fmt.Sprintf("%s %s", successStyle.Render(fmt.Sprintf("↑%d", ahead)), warnStyle.Render(fmt.Sprintf("↓%d", behind)))
-			} else if ahead > 0 {
-				aheadBehind = successStyle.Render(fmt.Sprintf("↑%d", ahead))
+			if s.Ahead > 0 && s.Behind > 0 {
+				aheadBehind = fmt.Sprintf("%s %s",
+					successStyle.Render(fmt.Sprintf("↑%d", s.Ahead)),
+					warnStyle.Render(fmt.Sprintf("↓%d", s.Behind)))
+			} else if s.Ahead > 0 {
+				aheadBehind = successStyle.Render(fmt.Sprintf("↑%d", s.Ahead))
 			} else {
-				aheadBehind = warnStyle.Render(fmt.Sprintf("↓%d", behind))
+				aheadBehind = warnStyle.Render(fmt.Sprintf("↓%d", s.Behind))
 			}
 		}
 
-		fmt.Printf("  %s %-20s %-20s %-10s %s\n",
+		fmt.Printf("  %s  %s  %s  %s  %s\n",
 			icon,
-			accentStyle.Render(s.Name),
-			dimStyle.Render(s.Branch),
+			accentStyle.Width(20).Render(s.Name),
+			dimStyle.Width(20).Render(s.Branch),
 			formatStatus(s.StatusString()),
 			aheadBehind,
 		)
