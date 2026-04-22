@@ -16,7 +16,7 @@ var tuiCmd = &cobra.Command{
 			return err
 		}
 
-		return tui.Run(rootDir, cfg, filterRepos(cfg), version.Version)
+		return tui.Run(rootDir, cfg, filterRepos(cfg), version.Get())
 	},
 }
 

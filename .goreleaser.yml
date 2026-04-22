@@ -3,11 +3,13 @@ version: 2
 
 project_name: mrepo
 
+variables:
+  description: "A CLI and TUI tool for managing multiple Git repositories within a monorepo workspace."
+  homepage: "https://github.com/pinealctx/mrepo"
+  license: "MIT"
+
 metadata:
   mod_timestamp: "{{ .CommitTimestamp }}"
-  license: "MIT"
-  homepage: "https://github.com/pinealctx/mrepo"
-  description: "A CLI and TUI tool for managing multiple Git repositories within a monorepo workspace."
 
 snapshot:
   version_template: "0.0.0-{{ .Timestamp }}"
