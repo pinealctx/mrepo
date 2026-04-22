@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,7 +10,6 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
-	"time"
 	"unicode/utf8"
 
 	"github.com/pinealctx/mrepo/internal/config"
@@ -38,18 +36,14 @@ var forallCmd = &cobra.Command{
 			return fmt.Errorf("usage: mrepo forall -- <command> [args...]")
 		}
 
-		cfgPath, err := config.FindConfigFile(rootDir)
-		if err != nil {
-			return err
-		}
-		cfg, err := config.Load(cfgPath)
+		_, cfg, err := loadConfig(rootDir)
 		if err != nil {
 			return err
 		}
 
 		repos := filterRepos(cfg)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), forallTimeout)
 		defer cancel()
 
 		results := runForall(ctx, repos, args, runtime.NumCPU())
@@ -58,9 +52,7 @@ var forallCmd = &cobra.Command{
 		})
 
 		if jsonOutput {
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(results)
+			return printJSON(results)
 		}
 
 		for _, r := range results {

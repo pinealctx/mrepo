@@ -32,7 +32,7 @@ func ensureGitignore(rootDir, relPath string) error {
 		for scanner.Scan() {
 			lines = append(lines, scanner.Text())
 		}
-		f.Close()
+		_ = f.Close()
 	}
 
 	// Check if already present (match the path with or without trailing /).
@@ -49,7 +49,7 @@ func ensureGitignore(rootDir, relPath string) error {
 	if err != nil {
 		return fmt.Errorf("write .gitignore: %w", err)
 	}
-	defer w.Close()
+	defer w.Close() //nolint:errcheck // deferred close on write-only file
 
 	hasMrepoHeader := false
 	for _, line := range lines {
@@ -60,9 +60,13 @@ func ensureGitignore(rootDir, relPath string) error {
 	}
 
 	if !hasMrepoHeader {
-		fmt.Fprintln(w, "# mrepo: managed sub-repositories")
+		if _, err := fmt.Fprintln(w, "# mrepo: managed sub-repositories"); err != nil {
+			return fmt.Errorf("write .gitignore header: %w", err)
+		}
 	}
-	fmt.Fprintln(w, entry)
+	if _, err := fmt.Fprintln(w, entry); err != nil {
+		return fmt.Errorf("write .gitignore entry: %w", err)
+	}
 	return nil
 }
 

@@ -8,10 +8,7 @@ linters:
     - staticcheck
     - tparallel
     - whitespace
-  disable:
-    - errcheck
-    - ineffassign
-    - unused
+  disable: []
   exclusions:
     generated: lax
     presets:

@@ -2,31 +2,22 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"runtime"
 	"sort"
-	"time"
 
-	"charm.land/lipgloss/v2"
-	"charm.land/lipgloss/v2/table"
-
-	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
 
 	"github.com/spf13/cobra"
 )
 
+var showBranches bool
+
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show status of all repos",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfgPath, err := config.FindConfigFile(rootDir)
-		if err != nil {
-			return err
-		}
-		cfg, err := config.Load(cfgPath)
+		_, cfg, err := loadConfig(rootDir)
 		if err != nil {
 			return err
 		}
@@ -36,7 +27,7 @@ var statusCmd = &cobra.Command{
 			repos[name] = repo.Path
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), statusTimeout)
 		defer cancel()
 
 		statuses := git.GetStatuses(ctx, rootDir, repos, runtime.NumCPU())
@@ -44,35 +35,97 @@ var statusCmd = &cobra.Command{
 			return statuses[i].Name < statuses[j].Name
 		})
 
-		if jsonOutput {
-			return printStatusJSON(statuses)
+		// Optionally fetch branch info.
+		var branchesMap map[string][]git.BranchInfo
+		if showBranches {
+			branchesMap = loadBranchesMap(ctx, statuses)
 		}
 
-		printStatusTable(statuses)
+		if jsonOutput {
+			return printJSON(toStatusJSON(statuses, branchesMap))
+		}
+
+		printStatusTable(statuses, branchesMap)
 		return nil
 	},
 }
 
-func printStatusTable(statuses []*git.RepoStatus) {
-	t := table.New().
-		Headers("REPO", "BRANCH", "STATUS", "AHEAD/BEHIND").
-		Width(80).
-		Border(lipgloss.NormalBorder()).
-		BorderTop(false).BorderBottom(false).
-		BorderLeft(false).BorderRight(false).
-		BorderHeader(true).
-		BorderColumn(false).
-		BorderRow(false).
-		StyleFunc(func(row, col int) lipgloss.Style {
-			if row == table.HeaderRow {
-				return boldStyle
+func loadBranchesMap(ctx context.Context, statuses []*git.RepoStatus) map[string][]git.BranchInfo {
+	m := make(map[string][]git.BranchInfo, len(statuses))
+	for _, s := range statuses {
+		if s.Worktree == git.StatusMissing || s.Error != nil {
+			continue
+		}
+		// s.Path is already an absolute path from GetStatuses.
+		branches, err := git.GetBranches(ctx, s.Path)
+		if err != nil {
+			continue
+		}
+		m[s.Name] = branches
+	}
+	return m
+}
+
+type jsonStatusBranch struct {
+	Name    string `json:"name"`
+	Current bool   `json:"current"`
+	Remote  string `json:"remote,omitempty"`
+	Ahead   int    `json:"ahead"`
+	Behind  int    `json:"behind"`
+}
+
+type jsonStatus struct {
+	Name     string             `json:"name"`
+	Path     string             `json:"path"`
+	Branch   string             `json:"branch,omitempty"`
+	Remote   string             `json:"remote,omitempty"`
+	Ahead    int                `json:"ahead"`
+	Behind   int                `json:"behind"`
+	Status   string             `json:"status"`
+	Clean    bool               `json:"clean"`
+	Error    string             `json:"error,omitempty"`
+	Branches []jsonStatusBranch `json:"branches,omitempty"`
+}
+
+func toStatusJSON(statuses []*git.RepoStatus, branchesMap map[string][]git.BranchInfo) []jsonStatus {
+	out := make([]jsonStatus, len(statuses))
+	for i, s := range statuses {
+		js := jsonStatus{
+			Name:   s.Name,
+			Path:   s.Path,
+			Branch: s.Branch,
+			Remote: s.Remote,
+			Ahead:  s.Ahead,
+			Behind: s.Behind,
+			Status: s.StatusString(),
+			Clean:  s.IsClean(),
+		}
+		if s.Error != nil {
+			js.Error = s.Error.Error()
+		}
+		if branches, ok := branchesMap[s.Name]; ok {
+			js.Branches = make([]jsonStatusBranch, len(branches))
+			for j, b := range branches {
+				js.Branches[j] = jsonStatusBranch{
+					Name:    b.Name,
+					Current: b.Current,
+					Remote:  b.Remote,
+					Ahead:   b.Ahead,
+					Behind:  b.Behind,
+				}
 			}
-			return lipgloss.NewStyle()
-		})
+		}
+		out[i] = js
+	}
+	return out
+}
+
+func printStatusTable(statuses []*git.RepoStatus, branchesMap map[string][]git.BranchInfo) {
+	t := newHeaderTable("REPO", "BRANCH", "STATUS", "AHEAD/BEHIND")
 
 	missingCount := 0
 	for _, s := range statuses {
-		if s.Worktree == git.StatusMissing && !isRootRepo(s.Name) {
+		if s.Worktree == git.StatusMissing {
 			missingCount++
 		}
 
@@ -91,7 +144,7 @@ func printStatusTable(statuses []*git.RepoStatus) {
 
 		nameStr := icon + " " + nameStyle.Render(displayName)
 
-		if s.Worktree == git.StatusMissing && !isRootRepo(s.Name) {
+		if s.Worktree == git.StatusMissing {
 			t.Row(nameStr, "", missingStyle.Render("MISSING"), "")
 			continue
 		}
@@ -115,6 +168,24 @@ func printStatusTable(statuses []*git.RepoStatus) {
 		}
 
 		t.Row(nameStr, dimStyle.Render(s.Branch), formatStatus(s.StatusString()), aheadBehind)
+
+		// Show branches if --branches flag is set.
+		if branches, ok := branchesMap[s.Name]; ok {
+			for _, b := range branches {
+				if b.Current && b.Name == s.Branch {
+					continue // skip the already-displayed current branch
+				}
+				marker := "  "
+				branchName := dimStyle.Render(b.Name)
+				ab := dimStyle.Render("-")
+				if b.Ahead > 0 || b.Behind > 0 {
+					ab = fmt.Sprintf("%s %s",
+						successStyle.Render(fmt.Sprintf("↑%d", b.Ahead)),
+						warnStyle.Render(fmt.Sprintf("↓%d", b.Behind)))
+				}
+				t.Row("", branchName, marker, ab)
+			}
+		}
 	}
 
 	fmt.Println(t.Render())
@@ -127,43 +198,8 @@ func printStatusTable(statuses []*git.RepoStatus) {
 	}
 }
 
-func printStatusJSON(statuses []*git.RepoStatus) error {
-	type jsonStatus struct {
-		Name   string `json:"name"`
-		Path   string `json:"path"`
-		Branch string `json:"branch,omitempty"`
-		Remote string `json:"remote,omitempty"`
-		Ahead  int    `json:"ahead"`
-		Behind int    `json:"behind"`
-		Status string `json:"status"`
-		Clean  bool   `json:"clean"`
-		Error  string `json:"error,omitempty"`
-	}
-
-	out := make([]jsonStatus, len(statuses))
-	for i, s := range statuses {
-		js := jsonStatus{
-			Name:   s.Name,
-			Path:   s.Path,
-			Branch: s.Branch,
-			Remote: s.Remote,
-			Ahead:  s.Ahead,
-			Behind: s.Behind,
-			Status: s.StatusString(),
-			Clean:  s.IsClean(),
-		}
-		if s.Error != nil {
-			js.Error = s.Error.Error()
-		}
-		out[i] = js
-	}
-
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
-}
-
 func init() {
 	statusCmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
+	statusCmd.Flags().BoolVar(&showBranches, "branches", false, "show all local branches per repo")
 	rootCmd.AddCommand(statusCmd)
 }

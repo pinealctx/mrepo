@@ -11,7 +11,9 @@ func TestEnsureGitignore(t *testing.T) {
 	root := t.TempDir()
 
 	// Create .git dir so it's detected as a git repo.
-	os.MkdirAll(filepath.Join(root, ".git"), 0o755)
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Add a repo path.
 	if err := ensureGitignore(root, "services/backend"); err != nil {
@@ -56,7 +58,9 @@ func TestEnsureGitignore(t *testing.T) {
 
 func TestEnsureGitignoreSkipsRoot(t *testing.T) {
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, ".git"), 0o755)
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	// "." should be skipped.
 	if err := ensureGitignore(root, "."); err != nil {
@@ -83,11 +87,17 @@ func TestEnsureGitignoreNoGitDir(t *testing.T) {
 
 func TestRemoveFromGitignore(t *testing.T) {
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, ".git"), 0o755)
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Setup: add two repos.
-	ensureGitignore(root, "services/backend")
-	ensureGitignore(root, "web/app")
+	if err := ensureGitignore(root, "services/backend"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureGitignore(root, "web/app"); err != nil {
+		t.Fatal(err)
+	}
 
 	// Remove one.
 	if err := removeFromGitignore(root, "services/backend"); err != nil {

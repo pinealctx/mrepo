@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -159,25 +161,26 @@ func Log(ctx context.Context, repoPath string, max int) (string, error) {
 	return gitCmd(ctx, repoPath, "log", "--oneline", n)
 }
 
-type PullResult struct {
+// OperationResult holds the outcome of a single pull or fetch operation.
+type OperationResult struct {
 	Name   string
 	Path   string
 	Output string
 	Error  error
 }
 
-func Pull(ctx context.Context, name, repoPath string) *PullResult {
+func Pull(ctx context.Context, name, repoPath string) *OperationResult {
 	out, err := gitCmd(ctx, repoPath, "pull", "--ff-only")
-	r := &PullResult{Name: name, Path: repoPath, Output: out}
+	r := &OperationResult{Name: name, Path: repoPath, Output: out}
 	if err != nil {
 		r.Error = fmt.Errorf("pull: %s", out)
 	}
 	return r
 }
 
-func Fetch(ctx context.Context, name, repoPath string) *PullResult {
+func Fetch(ctx context.Context, name, repoPath string) *OperationResult {
 	out, err := gitCmd(ctx, repoPath, "fetch", "--all")
-	r := &PullResult{Name: name, Path: repoPath, Output: out}
+	r := &OperationResult{Name: name, Path: repoPath, Output: out}
 	if err != nil {
 		r.Error = fmt.Errorf("fetch: %s", out)
 	}
@@ -285,15 +288,15 @@ func GetStatuses(ctx context.Context, rootDir string, repos map[string]string, p
 	})
 }
 
-func PullAll(ctx context.Context, rootDir string, repos map[string]string, parallel int) []*PullResult {
-	return parallelDo(ctx, repos, parallel, func(ctx context.Context, name string) *PullResult {
+func PullAll(ctx context.Context, rootDir string, repos map[string]string, parallel int) []*OperationResult {
+	return parallelDo(ctx, repos, parallel, func(ctx context.Context, name string) *OperationResult {
 		absPath := filepath.Join(rootDir, repos[name])
 		return Pull(ctx, name, absPath)
 	})
 }
 
-func FetchAll(ctx context.Context, rootDir string, repos map[string]string, parallel int) []*PullResult {
-	return parallelDo(ctx, repos, parallel, func(ctx context.Context, name string) *PullResult {
+func FetchAll(ctx context.Context, rootDir string, repos map[string]string, parallel int) []*OperationResult {
+	return parallelDo(ctx, repos, parallel, func(ctx context.Context, name string) *OperationResult {
 		absPath := filepath.Join(rootDir, repos[name])
 		return Fetch(ctx, name, absPath)
 	})
@@ -316,8 +319,228 @@ func toNameMap(specs map[string]CloneSpec) map[string]string {
 	return m
 }
 
+// BranchInfo holds metadata about a single local branch.
+type BranchInfo struct {
+	Name    string // branch name, e.g. "main", "feature/foo"
+	Current bool   // true if HEAD points to this branch
+	Remote  string // upstream short ref, e.g. "origin/main", empty if no upstream
+	Ahead   int    // commits ahead of upstream
+	Behind  int    // commits behind upstream
+}
+
+// GetBranches returns all local branches for a repo with upstream tracking info.
+// The current branch is always first.
+func GetBranches(ctx context.Context, repoPath string) ([]BranchInfo, error) {
+	// Use | as separator since %x00 (NUL) is not expanded on Windows (mingw).
+	const sep = "|"
+	out, err := gitCmd(ctx, repoPath,
+		"for-each-ref",
+		"--format=%(refname:short)"+sep+"%(upstream:short)"+sep+"%(upstream:track)"+sep+"%(HEAD)",
+		"refs/heads/")
+	if err != nil {
+		return nil, fmt.Errorf("list branches: %w", err)
+	}
+	if out == "" {
+		return nil, nil
+	}
+
+	var branches []BranchInfo
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, sep, 4)
+		if len(parts) < 4 {
+			continue
+		}
+		name := parts[0]
+		upstream := parts[1]
+		track := parts[2]
+		head := parts[3]
+
+		ahead, behind := parseTrackStatus(track)
+
+		bi := BranchInfo{
+			Name:    name,
+			Current: head == "*",
+			Remote:  upstream,
+			Ahead:   ahead,
+			Behind:  behind,
+		}
+		branches = append(branches, bi)
+	}
+
+	// Sort: current branch first, then alphabetical.
+	sort.Slice(branches, func(i, j int) bool {
+		if branches[i].Current != branches[j].Current {
+			return branches[i].Current
+		}
+		return branches[i].Name < branches[j].Name
+	})
+
+	return branches, nil
+}
+
+// parseTrackStatus parses "[ahead N]", "[behind N]", or "[ahead N, behind M]".
+var trackRe = regexp.MustCompile(`ahead (\d+)|behind (\d+)`)
+
+func parseTrackStatus(s string) (ahead, behind int) {
+	for _, m := range trackRe.FindAllStringSubmatch(s, -1) {
+		if m[1] != "" {
+			ahead, _ = strconv.Atoi(m[1])
+		}
+		if m[2] != "" {
+			behind, _ = strconv.Atoi(m[2])
+		}
+	}
+	return
+}
+
+// RemoteBranchInfo holds metadata about a remote-tracking branch.
+type RemoteBranchInfo struct {
+	Name string // e.g. "origin/main"
+}
+
+// GetRemoteBranches returns all remote-tracking branches for a repo.
+func GetRemoteBranches(ctx context.Context, repoPath string) ([]RemoteBranchInfo, error) {
+	out, err := gitCmd(ctx, repoPath,
+		"for-each-ref",
+		"--format=%(refname:short)",
+		"refs/remotes/")
+	if err != nil {
+		return nil, fmt.Errorf("list remote branches: %w", err)
+	}
+	if out == "" {
+		return nil, nil
+	}
+
+	var branches []RemoteBranchInfo
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Contains(line, "->") {
+			continue
+		}
+		branches = append(branches, RemoteBranchInfo{Name: line})
+	}
+
+	sort.Slice(branches, func(i, j int) bool {
+		return branches[i].Name < branches[j].Name
+	})
+
+	return branches, nil
+}
+
+// Checkout switches to the given branch. If create is true, creates the branch first.
+func Checkout(ctx context.Context, repoPath, branch string, create bool) error {
+	args := []string{"checkout"}
+	if create {
+		args = append(args, "-b")
+	}
+	args = append(args, branch)
+	_, err := gitCmd(ctx, repoPath, args...)
+	if err != nil {
+		return fmt.Errorf("checkout %s: %w", branch, err)
+	}
+	return nil
+}
+
+// DiffFile represents a single changed file in the working tree.
+type DiffFile struct {
+	Status string // "M", "A", "D", "R", "?"
+	Path   string // relative file path
+}
+
+// GetDiffFiles returns all changed files (staged, unstaged, and untracked).
+func GetDiffFiles(ctx context.Context, repoPath string) ([]DiffFile, error) {
+	out, err := gitCmd(ctx, repoPath, "status", "--porcelain=v1")
+	if err != nil {
+		return nil, fmt.Errorf("get diff files: %w", err)
+	}
+	if out == "" {
+		return nil, nil
+	}
+
+	var files []DiffFile
+	for _, line := range strings.Split(out, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		x := line[0]
+		y := line[1]
+		path := line[3:]
+
+		// Determine display status from XY codes.
+		status := fileStatusFromXY(x, y)
+
+		// Handle renames: "old -> new"
+		if strings.Contains(path, " -> ") {
+			parts := strings.SplitN(path, " -> ", 2)
+			path = parts[1]
+		}
+
+		files = append(files, DiffFile{Status: status, Path: path})
+	}
+
+	return files, nil
+}
+
+func fileStatusFromXY(x, y byte) string {
+	switch {
+	case x == '?' && y == '?':
+		return "?"
+	case x == 'D' || y == 'D':
+		return "D"
+	case y == 'M' || x == 'M':
+		return "M"
+	case x == 'A' || y == 'A':
+		return "A"
+	case x == 'R' || y == 'R':
+		return "R"
+	default:
+		return string(x) + string(y)
+	}
+}
+
+// FileDiff holds the unified diff content for a single file.
+type FileDiff struct {
+	Path    string
+	Content string
+	Error   error
+}
+
+// GetFileDiff returns the unified diff for a single file.
+// For untracked files, compares against /dev/null.
+func GetFileDiff(ctx context.Context, repoPath, filePath string, isUntracked bool) *FileDiff {
+	if isUntracked {
+		return getFileDiffUntracked(ctx, repoPath, filePath)
+	}
+
+	out, err := gitCmd(ctx, repoPath, "diff", "HEAD", "--", filePath)
+	if err != nil {
+		// File may be newly added with no HEAD comparison.
+		return getFileDiffUntracked(ctx, repoPath, filePath)
+	}
+	return &FileDiff{Path: filePath, Content: out}
+}
+
+func getFileDiffUntracked(ctx context.Context, repoPath, filePath string) *FileDiff {
+	cmd := exec.CommandContext(ctx, "git", "diff", "--no-index", "/dev/null", filePath)
+	cmd.Dir = repoPath
+	out, _ := cmd.CombinedOutput()
+	content := strings.TrimSpace(string(out))
+	if content == "" {
+		return &FileDiff{Path: filePath, Error: fmt.Errorf("no diff available")}
+	}
+	return &FileDiff{Path: filePath, Content: content}
+}
+
 func ScanGitRepos(ctx context.Context, rootDir string) ([]string, error) {
 	var repos []string
+
+	// Check if root directory itself is a git repo.
+	if _, err := os.Stat(filepath.Join(rootDir, ".git")); err == nil {
+		repos = append(repos, ".")
+	}
 
 	err := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

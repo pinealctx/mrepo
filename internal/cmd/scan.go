@@ -2,11 +2,8 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
@@ -14,13 +11,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type scanResultJSON struct {
+	All      []string `json:"all"`
+	New      []string `json:"new"`
+	Count    int      `json:"count"`
+	NewCount int      `json:"new_count"`
+}
+
 var scanCmd = &cobra.Command{
 	Use:   "scan",
 	Short: "Scan for Git repos not yet in config",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		addAll, _ := cmd.Flags().GetBool("add")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 		defer cancel()
 
 		found, err := git.ScanGitRepos(ctx, rootDir)
@@ -47,7 +51,12 @@ var scanCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			return printScanJSON(found, newRepos)
+			return printJSON(scanResultJSON{
+				All:      found,
+				New:      newRepos,
+				Count:    len(found),
+				NewCount: len(newRepos),
+			})
 		}
 
 		if len(newRepos) == 0 {
@@ -99,24 +108,6 @@ func addScannedRepos(ctx context.Context, cfgPath string, cfg *config.Config, re
 		cfgPath = config.ConfigPath(rootDir, config.FormatTOML)
 	}
 	return cfg.Save(cfgPath)
-}
-
-func printScanJSON(found []string, newRepos []string) error {
-	type scanResult struct {
-		All      []string `json:"all"`
-		New      []string `json:"new"`
-		Count    int      `json:"count"`
-		NewCount int      `json:"new_count"`
-	}
-
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(scanResult{
-		All:      found,
-		New:      newRepos,
-		Count:    len(found),
-		NewCount: len(newRepos),
-	})
 }
 
 func init() {

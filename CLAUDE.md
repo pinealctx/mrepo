@@ -28,12 +28,12 @@ Release: push a semver tag (`vX.Y.Z`) — GoReleaser builds cross-platform binar
 main.go                        Entry point → cmd.Execute()
 internal/
   cmd/                         Cobra commands: root, status, pull, fetch, clone, sync,
-                               forall, add, remove, scan, tui, version
+                               forall, add, remove, scan, group, tui, version
   config/                      Config loading/saving (TOML + YAML), repo registry,
                                validation on Load (path/remote format checks)
   git/                         Git CLI wrappers (status, clone, pull, fetch, scan,
                                repo info, log), parallelDo generic helper
-  tui/                         Bubble Tea v2 TUI with bubbles/v2/table + lipgloss v2
+  tui/                         Bubble Tea v2 TUI: left (repos│branches│files) right (diff)
   version/                     Version string, injected via -ldflags at release
 ```
 
@@ -59,48 +59,59 @@ repos = ["backend", "frontend"]
 
 ### Data flow
 
-1. `cmd/` loads config via `config.FindConfigFile()` → `config.Load()` (auto-detects `.repos.toml` / `.repos.yml` / `.repos.yaml`, validates entries)
-2. `filterRepos(cfg)` applies `--group` filtering if set
-3. Builds a `map[string]string` of `{repoName: relativePath}` for git operations
-4. Calls `git.GetStatuses()` / `git.PullAll()` / `git.CloneAll()` which fan out via `parallelDo` generic helper using `errgroup` with `runtime.NumCPU()` workers and `atomic.Int64` index
-5. Each worker shells out to `git` via `exec.CommandContext`
-6. Results sorted alphabetically and rendered (table/JSON/TUI)
+1. `cmd/` loads config via `loadConfig(rootDir)` (auto-detects `.repos.toml` / `.repos.yml` / `.repos.yaml`, validates entries)
+2. `filterRepos(cfg)` applies `--group` filtering if set, returns `map[string]*config.Repo`
+3. `partitionRepos()` splits into existing/missing sets (used by pull, fetch)
+4. Builds a `map[string]string` of `{repoName: relativePath}` for git operations
+5. Calls `git.GetStatuses()` / `git.PullAll()` / `git.CloneAll()` which fan out via `parallelDo` generic helper using `errgroup` with `runtime.NumCPU()` workers and `atomic.Int64` index
+6. Each worker shells out to `git` via `exec.CommandContext`
+7. Results sorted alphabetically and rendered via `newResultTable()` / `newHeaderTable()` or `printJSON()`
 
 ### Key CLI commands
 
 | Command | Description |
 |---------|-------------|
 | `mrepo status` | Show status (branch, clean/dirty/missing, ahead/behind) |
+| `mrepo status --branches` | Show all local branches per repo with ahead/behind |
 | `mrepo clone` | Clone repos not yet on disk (`--force`, `--depth N`) |
 | `mrepo sync` | Clone missing + pull existing in one step |
 | `mrepo pull` | Pull existing repos (skips missing) |
 | `mrepo fetch` | Fetch refs for existing repos |
+| `mrepo checkout <branch>` | Checkout a branch across repos (`--create` to create new) |
 | `mrepo forall -- <cmd>` | Run a command in each repo |
 | `mrepo scan` | Discover untracked repos (`--add` auto-detects remote/branch) |
+| `mrepo group list` | List groups and their repos |
+| `mrepo group create/delete/add/remove` | Manage groups |
 
 ### Global flags
 
 - `--root` — workspace root (default `.`)
-- `--group` — filter by group name (all commands)
+- `--group` — filter by group name (all commands including TUI)
 - `--json` — JSON output on reporting commands
 
 ### Key dependencies
 
 - `github.com/spf13/cobra` — CLI framework
-- `charm.land/bubbletea/v2` + `charm.land/bubbles/v2` — TUI (interactive table widget)
-- `charm.land/lipgloss/v2` + `charm.land/lipgloss/v2/table` — styling + static table renderer (CLI output)
+- `charm.land/bubbletea/v2` — TUI framework (Bubble Tea v2)
+- `charm.land/lipgloss/v2` + `charm.land/lipgloss/v2/table` — styling, layout (JoinHorizontal), static table renderer (CLI output)
 - `golang.org/x/sync/errgroup` — bounded parallelism
 - `github.com/pelletier/go-toml/v2` + `gopkg.in/yaml.v3` — config formats
 
 ### Key patterns
 
 - `parallelDo[T]` generic in `git/operations.go` eliminates parallel worker boilerplate
-- `filterRepos()` in `cmd/root.go` centralizes `--group` filtering for all commands
+- `filterRepos()` in `cmd/root.go` centralizes `--group` filtering for all commands (including TUI)
+- `loadConfig()` in `cmd/root.go` centralizes config file lookup + loading (used by all commands)
+- `printJSON()` / `newResultTable()` / `newHeaderTable()` in `cmd/root.go` eliminate output boilerplate
+- `partitionRepos()` in `cmd/root.go` splits repos into existing/missing (used by pull, fetch)
+- `OperationResult` in `git/operations.go` is the unified result type for pull and fetch operations
+- Timeout constants (`statusTimeout`, `pullTimeout`, etc.) defined in `cmd/root.go`
 - `truncate()` in `cmd/pull.go` counts runes (not bytes) for safe UTF-8 truncation
 - `validateCloneTarget()` prevents path traversal and flag injection in clone operations
-- CLI table output uses `lipgloss/v2/table` (static renderer with `StyleFunc` for per-cell coloring); TUI uses `bubbles/v2/table` (interactive widget with cursor, keyboard navigation)
-- `padRight(s, width)` in `cmd/forall.go` pads plain-text strings — only used by `forall` (multi-line output不适合table)
-- Icons use Unicode (`✓ ✗ ⚠ ↓ → ○ ● ↑`) for visual clarity; table libraries handle correct width measurement via `displaywidth`
+- CLI table output uses `lipgloss/v2/table` (static renderer with `StyleFunc`); TUI uses manual rendering with `lipgloss.JoinHorizontal` for master-detail split layout
+- TUI layout: left panel (repos│branches│files) split vertically + right panel (file diff), `tab` cycles focus sections
+- TUI focus model: 3 sections (repos/branches/files), `tab` cycles, `j/k` moves within, `enter` acts (checkout branch / load diff)
+- `padRight(s, width)` in `cmd/forall.go` pads plain-text strings — only used by `forall`
 - `ensureGitignore()` / `removeFromGitignore()` auto-manage `.gitignore` entries for sub-repos
 
 ### Conventions
@@ -109,6 +120,7 @@ repos = ["backend", "frontend"]
 - No backward compatibility — project is in initial development
 - Go style: Effective Go + Uber Go Style Guide. `PascalCase`/`camelCase`, acronyms as `UserID`
 - All reporting commands support `--json`; parallel operations use `errgroup` + `atomic.Int64`
+- `errcheck` linter is enabled — all error returns must be checked
 
 ## Pre-commit Hooks
 

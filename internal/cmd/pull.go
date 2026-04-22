@@ -2,71 +2,58 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
-	"time"
 	"unicode/utf8"
 
-	"charm.land/lipgloss/v2"
-	"charm.land/lipgloss/v2/table"
-
-	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
 
 	"github.com/spf13/cobra"
 )
 
-func isDirMissing(rootDir, relPath string) bool {
-	absPath := filepath.Join(rootDir, relPath)
-	_, err := os.Stat(absPath)
-	return os.IsNotExist(err)
+type jsonPull struct {
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Output string `json:"output,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 var pullCmd = &cobra.Command{
 	Use:   "pull",
 	Short: "Pull latest changes for all repos",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfgPath, err := config.FindConfigFile(rootDir)
-		if err != nil {
-			return err
-		}
-		cfg, err := config.Load(cfgPath)
+		_, cfg, err := loadConfig(rootDir)
 		if err != nil {
 			return err
 		}
 
-		repos := make(map[string]string)
-		var skipped []string
-		for name, repo := range filterRepos(cfg) {
-			if isDirMissing(rootDir, repo.Path) {
-				skipped = append(skipped, name)
-				continue
-			}
-			repos[name] = repo.Path
-		}
+		existing, missing := partitionRepos(filterRepos(cfg))
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), pullTimeout)
 		defer cancel()
 
-		results := git.PullAll(ctx, rootDir, repos, runtime.NumCPU())
+		results := git.PullAll(ctx, rootDir, existing, runtime.NumCPU())
 		sort.Slice(results, func(i, j int) bool {
 			return results[i].Name < results[j].Name
 		})
 
 		if jsonOutput {
-			return printPullJSON(results)
+			out := make([]jsonPull, 0, len(results)+len(missing))
+			for _, r := range results {
+				jp := jsonPull{Name: r.Name, Path: r.Path, Output: r.Output}
+				if r.Error != nil {
+					jp.Error = r.Error.Error()
+				}
+				out = append(out, jp)
+			}
+			for name := range missing {
+				out = append(out, jsonPull{Name: name, Error: "not cloned"})
+			}
+			return printJSON(out)
 		}
 
-		t := table.New().
-			Width(80).
-			Border(lipgloss.Border{}).
-			StyleFunc(func(row, col int) lipgloss.Style {
-				return lipgloss.NewStyle()
-			})
+		t := newResultTable()
 
 		for _, r := range results {
 			dn := displayRepoName(r.Name)
@@ -77,35 +64,13 @@ var pullCmd = &cobra.Command{
 			}
 		}
 
-		for _, name := range skipped {
+		for name := range missing {
 			t.Row(warnIcon(), displayRepoName(name), dimStyle.Render("not cloned (use 'mrepo sync')"))
 		}
 
 		fmt.Println(t.Render())
 		return nil
 	},
-}
-
-func printPullJSON(results []*git.PullResult) error {
-	type jsonPull struct {
-		Name   string `json:"name"`
-		Path   string `json:"path"`
-		Output string `json:"output,omitempty"`
-		Error  string `json:"error,omitempty"`
-	}
-
-	out := make([]jsonPull, len(results))
-	for i, r := range results {
-		jp := jsonPull{Name: r.Name, Path: r.Path, Output: r.Output}
-		if r.Error != nil {
-			jp.Error = r.Error.Error()
-		}
-		out[i] = jp
-	}
-
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
 }
 
 func truncate(s string, maxRunes int) string {

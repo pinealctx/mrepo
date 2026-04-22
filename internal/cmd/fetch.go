@@ -2,63 +2,58 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"runtime"
 	"sort"
-	"time"
 
-	"charm.land/lipgloss/v2"
-	"charm.land/lipgloss/v2/table"
-
-	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
 
 	"github.com/spf13/cobra"
 )
 
+type jsonFetch struct {
+	Name    string `json:"name"`
+	Path    string `json:"path,omitempty"`
+	Output  string `json:"output,omitempty"`
+	Error   string `json:"error,omitempty"`
+	Skipped bool   `json:"skipped,omitempty"`
+}
+
 var fetchCmd = &cobra.Command{
 	Use:   "fetch",
 	Short: "Fetch latest refs for all repos",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfgPath, err := config.FindConfigFile(rootDir)
-		if err != nil {
-			return err
-		}
-		cfg, err := config.Load(cfgPath)
+		_, cfg, err := loadConfig(rootDir)
 		if err != nil {
 			return err
 		}
 
-		repos := make(map[string]string)
-		var skipped []string
-		for name, repo := range filterRepos(cfg) {
-			if isDirMissing(rootDir, repo.Path) {
-				skipped = append(skipped, name)
-				continue
-			}
-			repos[name] = repo.Path
-		}
+		existing, missing := partitionRepos(filterRepos(cfg))
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 		defer cancel()
 
-		results := git.FetchAll(ctx, rootDir, repos, runtime.NumCPU())
+		results := git.FetchAll(ctx, rootDir, existing, runtime.NumCPU())
 		sort.Slice(results, func(i, j int) bool {
 			return results[i].Name < results[j].Name
 		})
 
 		if jsonOutput {
-			return printFetchJSON(results, skipped)
+			out := make([]jsonFetch, 0, len(results)+len(missing))
+			for _, r := range results {
+				jf := jsonFetch{Name: r.Name, Path: r.Path, Output: r.Output}
+				if r.Error != nil {
+					jf.Error = r.Error.Error()
+				}
+				out = append(out, jf)
+			}
+			for name := range missing {
+				out = append(out, jsonFetch{Name: name, Skipped: true})
+			}
+			return printJSON(out)
 		}
 
-		t := table.New().
-			Width(80).
-			Border(lipgloss.Border{}).
-			StyleFunc(func(row, col int) lipgloss.Style {
-				return lipgloss.NewStyle()
-			})
+		t := newResultTable()
 
 		for _, r := range results {
 			dn := displayRepoName(r.Name)
@@ -71,39 +66,13 @@ var fetchCmd = &cobra.Command{
 			}
 		}
 
-		for _, name := range skipped {
+		for name := range missing {
 			t.Row(warnIcon(), displayRepoName(name), dimStyle.Render("not cloned (use 'mrepo sync')"))
 		}
 
 		fmt.Println(t.Render())
 		return nil
 	},
-}
-
-func printFetchJSON(results []*git.PullResult, skipped []string) error {
-	type jsonFetch struct {
-		Name    string `json:"name"`
-		Path    string `json:"path"`
-		Output  string `json:"output,omitempty"`
-		Error   string `json:"error,omitempty"`
-		Skipped bool   `json:"skipped,omitempty"`
-	}
-
-	var out []jsonFetch
-	for _, r := range results {
-		jf := jsonFetch{Name: r.Name, Path: r.Path, Output: r.Output}
-		if r.Error != nil {
-			jf.Error = r.Error.Error()
-		}
-		out = append(out, jf)
-	}
-	for _, name := range skipped {
-		out = append(out, jsonFetch{Name: name, Skipped: true})
-	}
-
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
 }
 
 func init() {

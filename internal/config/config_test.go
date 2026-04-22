@@ -45,8 +45,12 @@ func TestDetectFormat(t *testing.T) {
 
 func TestConfigRoundTrip(t *testing.T) {
 	cfg := New()
-	cfg.AddRepo("backend", "services/backend", "https://github.com/org/backend.git", "main", "Go server")
-	cfg.AddRepo("frontend", "web/frontend", "git@github.com:org/frontend.git", "dev", "")
+	if err := cfg.AddRepo("backend", "services/backend", "https://github.com/org/backend.git", "main", "Go server"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddRepo("frontend", "web/frontend", "git@github.com:org/frontend.git", "dev", ""); err != nil {
+		t.Fatal(err)
+	}
 
 	dir := t.TempDir()
 
@@ -110,8 +114,12 @@ func TestAddRepoDuplicate(t *testing.T) {
 
 func TestRemoveRepo(t *testing.T) {
 	cfg := New()
-	cfg.AddRepo("a", "path-a", "", "", "")
-	cfg.AddRepo("b", "path-b", "", "", "")
+	if err := cfg.AddRepo("a", "path-a", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddRepo("b", "path-b", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
 
 	// Add group referencing repo a.
 	cfg.Groups = map[string]*Group{
@@ -136,12 +144,16 @@ func TestRemoveRepo(t *testing.T) {
 
 func TestRemoveRepoCleansEmptyGroup(t *testing.T) {
 	cfg := New()
-	cfg.AddRepo("a", "path-a", "", "", "")
+	if err := cfg.AddRepo("a", "path-a", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
 	cfg.Groups = map[string]*Group{
 		"only-a": {Repos: []string{"a"}},
 	}
 
-	cfg.RemoveRepo("a")
+	if _, err := cfg.RemoveRepo("a"); err != nil {
+		t.Fatal(err)
+	}
 	if _, exists := cfg.Groups["only-a"]; exists {
 		t.Error("empty group should be deleted")
 	}
@@ -158,7 +170,9 @@ func TestFindConfigFile(t *testing.T) {
 
 	// Create TOML config.
 	tomlPath := filepath.Join(dir, ".repos.toml")
-	os.WriteFile(tomlPath, []byte("version = 1\n"), 0o644)
+	if err := os.WriteFile(tomlPath, []byte("version = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	found, err := FindConfigFile(dir)
 	if err != nil {
@@ -170,7 +184,9 @@ func TestFindConfigFile(t *testing.T) {
 
 	// TOML takes priority over YAML.
 	yamlPath := filepath.Join(dir, ".repos.yaml")
-	os.WriteFile(yamlPath, []byte("version: 1\n"), 0o644)
+	if err := os.WriteFile(yamlPath, []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	found, err = FindConfigFile(dir)
 	if err != nil {
@@ -183,11 +199,171 @@ func TestFindConfigFile(t *testing.T) {
 
 func TestSortedRepoNames(t *testing.T) {
 	cfg := New()
-	cfg.AddRepo("charlie", "c", "", "", "")
-	cfg.AddRepo("alpha", "a", "", "", "")
-	cfg.AddRepo("bravo", "b", "", "", "")
+	if err := cfg.AddRepo("charlie", "c", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddRepo("alpha", "a", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddRepo("bravo", "b", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
 
 	names := cfg.SortedRepoNames()
+	want := []string{"alpha", "bravo", "charlie"}
+	if len(names) != len(want) {
+		t.Fatalf("got %d names, want %d", len(names), len(want))
+	}
+	for i, n := range names {
+		if n != want[i] {
+			t.Errorf("names[%d] = %q, want %q", i, n, want[i])
+		}
+	}
+}
+
+func TestSortedRepoNamesRootFirst(t *testing.T) {
+	cfg := New()
+	if err := cfg.AddRepo("bravo", "b", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddRepo(".", ".", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddRepo("alpha", "a", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	names := cfg.SortedRepoNames()
+	if names[0] != "." {
+		t.Errorf("first name = %q, want %q", names[0], ".")
+	}
+}
+
+func TestAddGroup(t *testing.T) {
+	cfg := New()
+	if err := cfg.AddGroup("services"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Groups["services"]; !ok {
+		t.Error("group not created")
+	}
+	if err := cfg.AddGroup("services"); err == nil {
+		t.Error("expected error for duplicate group")
+	}
+}
+
+func TestDeleteGroup(t *testing.T) {
+	cfg := New()
+	if err := cfg.AddGroup("services"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.DeleteGroup("services"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Groups["services"]; ok {
+		t.Error("group should be deleted")
+	}
+	if err := cfg.DeleteGroup("services"); err == nil {
+		t.Error("expected error for missing group")
+	}
+}
+
+func TestAddRepoToGroup(t *testing.T) {
+	cfg := New()
+	if err := cfg.AddRepo("backend", "services/backend", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddGroup("services"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cfg.AddRepoToGroup("services", "backend"); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Groups["services"].Repos) != 1 || cfg.Groups["services"].Repos[0] != "backend" {
+		t.Errorf("group repos = %v, want [backend]", cfg.Groups["services"].Repos)
+	}
+
+	// Duplicate.
+	if err := cfg.AddRepoToGroup("services", "backend"); err == nil {
+		t.Error("expected error for duplicate repo in group")
+	}
+
+	// Nonexistent repo.
+	if err := cfg.AddRepoToGroup("services", "missing"); err == nil {
+		t.Error("expected error for nonexistent repo")
+	}
+
+	// Nonexistent group.
+	if err := cfg.AddRepoToGroup("missing", "backend"); err == nil {
+		t.Error("expected error for nonexistent group")
+	}
+}
+
+func TestRemoveRepoFromGroup(t *testing.T) {
+	cfg := New()
+	if err := cfg.AddRepo("a", "path-a", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddRepo("b", "path-b", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddGroup("all"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddRepoToGroup("all", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddRepoToGroup("all", "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cfg.RemoveRepoFromGroup("all", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Groups["all"].Repos) != 1 || cfg.Groups["all"].Repos[0] != "b" {
+		t.Errorf("group repos = %v, want [b]", cfg.Groups["all"].Repos)
+	}
+
+	// Not in group.
+	if err := cfg.RemoveRepoFromGroup("all", "a"); err == nil {
+		t.Error("expected error for repo not in group")
+	}
+}
+
+func TestRemoveRepoFromGroupDeletesEmpty(t *testing.T) {
+	cfg := New()
+	if err := cfg.AddRepo("a", "path-a", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddGroup("only-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddRepoToGroup("only-a", "a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cfg.RemoveRepoFromGroup("only-a", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Groups["only-a"]; ok {
+		t.Error("empty group should be deleted")
+	}
+}
+
+func TestSortedGroupNames(t *testing.T) {
+	cfg := New()
+	if err := cfg.AddGroup("charlie"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddGroup("alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddGroup("bravo"); err != nil {
+		t.Fatal(err)
+	}
+
+	names := cfg.SortedGroupNames()
 	want := []string{"alpha", "bravo", "charlie"}
 	if len(names) != len(want) {
 		t.Fatalf("got %d names, want %d", len(names), len(want))

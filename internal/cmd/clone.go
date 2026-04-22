@@ -2,32 +2,29 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
-	"time"
 
-	"charm.land/lipgloss/v2"
-	"charm.land/lipgloss/v2/table"
-
-	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
 
 	"github.com/spf13/cobra"
 )
 
+type jsonClone struct {
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Output string `json:"output,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
 var cloneCmd = &cobra.Command{
 	Use:   "clone",
 	Short: "Clone repos that are not yet on disk",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfgPath, err := config.FindConfigFile(rootDir)
-		if err != nil {
-			return err
-		}
-		cfg, err := config.Load(cfgPath)
+		_, cfg, err := loadConfig(rootDir)
 		if err != nil {
 			return err
 		}
@@ -39,6 +36,10 @@ var cloneCmd = &cobra.Command{
 		specs := make(map[string]git.CloneSpec)
 		for name, repo := range filterRepos(cfg) {
 			if repo.Remote == "" {
+				continue
+			}
+			// Cannot clone into the workspace root itself.
+			if repo.Path == "." {
 				continue
 			}
 			absPath := filepath.Join(rootDir, repo.Path)
@@ -63,7 +64,7 @@ var cloneCmd = &cobra.Command{
 			return nil
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), cloneTimeout)
 		defer cancel()
 
 		results := git.CloneAll(ctx, rootDir, specs, runtime.NumCPU())
@@ -72,49 +73,31 @@ var cloneCmd = &cobra.Command{
 		})
 
 		if jsonOutput {
-			return printCloneJSON(results)
+			out := make([]jsonClone, len(results))
+			for i, r := range results {
+				jc := jsonClone{Name: r.Name, Path: r.Path, Output: r.Output}
+				if r.Error != nil {
+					jc.Error = r.Error.Error()
+				}
+				out[i] = jc
+			}
+			return printJSON(out)
 		}
 
-		t := table.New().
-			Width(80).
-			Border(lipgloss.Border{}).
-			StyleFunc(func(row, col int) lipgloss.Style {
-				return lipgloss.NewStyle()
-			})
+		t := newResultTable()
 
 		for _, r := range results {
+			dn := displayRepoName(r.Name)
 			if r.Error != nil {
-				t.Row(errorIcon(), r.Name, errorStyle.Render(truncate(r.Error.Error(), 80)))
+				t.Row(errorIcon(), dn, errorStyle.Render(truncate(r.Error.Error(), 80)))
 			} else {
-				t.Row(cloneIcon(), r.Name, dimStyle.Render(truncate(r.Output, 80)))
+				t.Row(cloneIcon(), dn, dimStyle.Render(truncate(r.Output, 80)))
 			}
 		}
 
 		fmt.Println(t.Render())
 		return nil
 	},
-}
-
-func printCloneJSON(results []*git.CloneResult) error {
-	type jsonClone struct {
-		Name   string `json:"name"`
-		Path   string `json:"path"`
-		Output string `json:"output,omitempty"`
-		Error  string `json:"error,omitempty"`
-	}
-
-	out := make([]jsonClone, len(results))
-	for i, r := range results {
-		jc := jsonClone{Name: r.Name, Path: r.Path, Output: r.Output}
-		if r.Error != nil {
-			jc.Error = r.Error.Error()
-		}
-		out[i] = jc
-	}
-
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
 }
 
 func init() {

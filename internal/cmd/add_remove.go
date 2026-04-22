@@ -59,6 +59,17 @@ var addCmd = &cobra.Command{
 			return err
 		}
 
+		// Add to group if --group is specified.
+		if groupName != "" {
+			if err := cfg.AddRepoToGroup(groupName, name); err != nil {
+				fmt.Printf("  %s %s\n", warnIcon(), dimStyle.Render("warning: "+err.Error()))
+			} else {
+				if err := cfg.Save(cfgPath); err != nil {
+					return err
+				}
+			}
+		}
+
 		// Add to .gitignore so root repo doesn't track the sub-repo.
 		if err := ensureGitignore(rootDir, repoPath); err != nil {
 			fmt.Printf("  %s %s\n", warnIcon(), dimStyle.Render("warning: could not update .gitignore: "+err.Error()))
@@ -71,6 +82,9 @@ var addCmd = &cobra.Command{
 				fmt.Printf(", branch: %s", branch)
 			}
 			fmt.Print(dimStyle.Render(")"))
+		}
+		if groupName != "" {
+			fmt.Printf(" %s", dimStyle.Render(fmt.Sprintf("→ group: %s", groupName)))
 		}
 		fmt.Println()
 		return nil
@@ -86,12 +100,7 @@ var removeCmd = &cobra.Command{
 		force, _ := cmd.Flags().GetBool("force")
 		deleteDir, _ := cmd.Flags().GetBool("delete")
 
-		cfgPath, err := config.FindConfigFile(rootDir)
-		if err != nil {
-			return err
-		}
-
-		cfg, err := config.Load(cfgPath)
+		cfgPath, cfg, err := loadConfig(rootDir)
 		if err != nil {
 			return err
 		}
@@ -109,8 +118,12 @@ var removeCmd = &cobra.Command{
 			}
 		} else if deleteDir {
 			// Re-add the repo so the user can retry with --force.
-			_ = cfg.AddRepo(name, repo.Path, repo.Remote, repo.Branch, repo.Description)
-			_ = cfg.Save(cfgPath)
+			if err := cfg.AddRepo(name, repo.Path, repo.Remote, repo.Branch, repo.Description); err != nil {
+				return fmt.Errorf("failed to restore repo config after abort: %w", err)
+			}
+			if err := cfg.Save(cfgPath); err != nil {
+				return fmt.Errorf("failed to save config after abort: %w", err)
+			}
 			return fmt.Errorf("--delete requires --force to actually remove the directory (repo untouched)")
 		}
 

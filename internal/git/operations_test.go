@@ -182,3 +182,89 @@ func TestValidateCloneTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestParseTrackStatus(t *testing.T) {
+	tests := []struct {
+		input      string
+		wantAhead  int
+		wantBehind int
+	}{
+		{"", 0, 0},
+		{"[ahead 3]", 3, 0},
+		{"[behind 5]", 0, 5},
+		{"[ahead 3, behind 1]", 3, 1},
+		{"[ahead 10, behind 20]", 10, 20},
+	}
+	for _, tt := range tests {
+		ahead, behind := parseTrackStatus(tt.input)
+		if ahead != tt.wantAhead || behind != tt.wantBehind {
+			t.Errorf("parseTrackStatus(%q) = ahead %d, behind %d; want %d, %d",
+				tt.input, ahead, behind, tt.wantAhead, tt.wantBehind)
+		}
+	}
+}
+
+func TestFileStatusFromXY(t *testing.T) {
+	tests := []struct {
+		x, y byte
+		want string
+	}{
+		{'?', '?', "?"},
+		{'M', ' ', "M"},
+		{' ', 'M', "M"},
+		{'A', ' ', "A"},
+		{'D', ' ', "D"},
+		{'R', ' ', "R"},
+		{'M', 'M', "M"},
+	}
+	for _, tt := range tests {
+		got := fileStatusFromXY(tt.x, tt.y)
+		if got != tt.want {
+			t.Errorf("fileStatusFromXY(%c, %c) = %q, want %q", tt.x, tt.y, got, tt.want)
+		}
+	}
+}
+
+func TestGetBranches(t *testing.T) {
+	repoPath, _ := filepath.Abs(".")
+	if _, err := os.Stat(filepath.Join(repoPath, ".git")); err != nil {
+		t.Skip("not in a git repo")
+	}
+
+	branches, err := GetBranches(context.Background(), repoPath)
+	if err != nil {
+		t.Fatalf("GetBranches: %v", err)
+	}
+	if len(branches) == 0 {
+		t.Fatal("expected at least one branch")
+	}
+	// First branch should be current.
+	if !branches[0].Current {
+		t.Error("first branch should be the current branch")
+	}
+	// Only one current.
+	currentCount := 0
+	for _, b := range branches {
+		if b.Current {
+			currentCount++
+		}
+	}
+	if currentCount != 1 {
+		t.Errorf("expected exactly 1 current branch, got %d", currentCount)
+	}
+}
+
+func TestGetDiffFiles(t *testing.T) {
+	repoPath, _ := filepath.Abs(".")
+	if _, err := os.Stat(filepath.Join(repoPath, ".git")); err != nil {
+		t.Skip("not in a git repo")
+	}
+
+	// Should not error even if clean.
+	files, err := GetDiffFiles(context.Background(), repoPath)
+	if err != nil {
+		t.Fatalf("GetDiffFiles: %v", err)
+	}
+	// Can't assert count since repo may or may not be clean, but should not panic.
+	_ = files
+}

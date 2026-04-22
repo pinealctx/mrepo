@@ -167,6 +167,86 @@ func (c *Config) SortedRepoNames() []string {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+
+	// Ensure root repo (".") is always first.
+	if _, ok := c.Repos["."]; ok {
+		for i, n := range names {
+			if n == "." {
+				if i != 0 {
+					names = append(names[:i], names[i+1:]...)
+					names = append([]string{"."}, names...)
+				}
+				break
+			}
+		}
+	}
+
+	return names
+}
+
+func (c *Config) AddGroup(name string) error {
+	if _, exists := c.Groups[name]; exists {
+		return fmt.Errorf("group %q already exists", name)
+	}
+	c.Groups[name] = &Group{Repos: []string{}}
+	return nil
+}
+
+func (c *Config) DeleteGroup(name string) error {
+	if _, exists := c.Groups[name]; !exists {
+		return fmt.Errorf("group %q not found", name)
+	}
+	delete(c.Groups, name)
+	return nil
+}
+
+func (c *Config) AddRepoToGroup(groupName, repoName string) error {
+	group, exists := c.Groups[groupName]
+	if !exists {
+		return fmt.Errorf("group %q not found", groupName)
+	}
+	if _, exists := c.Repos[repoName]; !exists {
+		return fmt.Errorf("repo %q not found in config", repoName)
+	}
+	for _, r := range group.Repos {
+		if r == repoName {
+			return fmt.Errorf("repo %q already in group %q", repoName, groupName)
+		}
+	}
+	group.Repos = append(group.Repos, repoName)
+	return nil
+}
+
+func (c *Config) RemoveRepoFromGroup(groupName, repoName string) error {
+	group, exists := c.Groups[groupName]
+	if !exists {
+		return fmt.Errorf("group %q not found", groupName)
+	}
+	found := false
+	filtered := make([]string, 0, len(group.Repos))
+	for _, r := range group.Repos {
+		if r == repoName {
+			found = true
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	if !found {
+		return fmt.Errorf("repo %q not in group %q", repoName, groupName)
+	}
+	group.Repos = filtered
+	if len(group.Repos) == 0 {
+		delete(c.Groups, groupName)
+	}
+	return nil
+}
+
+func (c *Config) SortedGroupNames() []string {
+	names := make([]string, 0, len(c.Groups))
+	for name := range c.Groups {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	return names
 }
 

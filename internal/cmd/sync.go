@@ -2,18 +2,12 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
-	"time"
 
-	"charm.land/lipgloss/v2"
-	"charm.land/lipgloss/v2/table"
-
-	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
 
 	"github.com/spf13/cobra"
@@ -31,23 +25,21 @@ var syncCmd = &cobra.Command{
 	Short: "Clone missing repos and pull existing ones",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		depth, _ := cmd.Flags().GetInt("depth")
-		cfgPath, err := config.FindConfigFile(rootDir)
+		_, cfg, err := loadConfig(rootDir)
 		if err != nil {
 			return err
 		}
-		cfg, err := config.Load(cfgPath)
-		if err != nil {
-			return err
-		}
+
+		filtered := filterRepos(cfg)
 
 		// Partition into missing (clone) and existing (pull).
 		toClone := make(map[string]git.CloneSpec)
 		toPull := make(map[string]string)
 
-		for name, repo := range filterRepos(cfg) {
+		for name, repo := range filtered {
 			absPath := filepath.Join(rootDir, repo.Path)
 			if _, err := os.Stat(absPath); os.IsNotExist(err) {
-				if repo.Remote != "" {
+				if repo.Remote != "" && repo.Path != "." {
 					toClone[name] = git.CloneSpec{
 						Path:   repo.Path,
 						Remote: repo.Remote,
@@ -60,7 +52,7 @@ var syncCmd = &cobra.Command{
 			}
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
 		defer cancel()
 
 		var allResults []syncRepoResult
@@ -98,7 +90,7 @@ var syncCmd = &cobra.Command{
 		}
 
 		// Repos with no remote and missing on disk.
-		for name, repo := range filterRepos(cfg) {
+		for name, repo := range filtered {
 			absPath := filepath.Join(rootDir, repo.Path)
 			if _, err := os.Stat(absPath); os.IsNotExist(err) && repo.Remote == "" {
 				allResults = append(allResults, syncRepoResult{
@@ -114,17 +106,10 @@ var syncCmd = &cobra.Command{
 		})
 
 		if jsonOutput {
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			return enc.Encode(allResults)
+			return printJSON(allResults)
 		}
 
-		t := table.New().
-			Width(80).
-			Border(lipgloss.Border{}).
-			StyleFunc(func(row, col int) lipgloss.Style {
-				return lipgloss.NewStyle()
-			})
+		t := newResultTable()
 
 		for _, r := range allResults {
 			dn := displayRepoName(r.Name)
