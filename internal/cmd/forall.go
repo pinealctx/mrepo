@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pinealctx/mrepo/internal/config"
 
@@ -65,11 +66,11 @@ var forallCmd = &cobra.Command{
 		for _, r := range results {
 			dn := displayRepoName(r.Name)
 			if r.Error != "" {
-				fmt.Printf("  %s %-20s %s\n", errorIcon(), dn, errorStyle.Render(truncate(r.Error, 80)))
+				fmt.Printf("  %s %s %s\n", errorIcon(), padRight(dn, 20), errorStyle.Render(truncate(r.Error, 80)))
 			} else if r.Output != "" {
 				fmt.Printf("  %s %s:\n%s\n", successIcon(), accentStyle.Render(dn), dimStyle.Render(indent(r.Output)))
 			} else {
-				fmt.Printf("  %s %-20s %s\n", successIcon(), dn, dimStyle.Render("(no output)"))
+				fmt.Printf("  %s %s %s\n", successIcon(), padRight(dn, 20), dimStyle.Render("(no output)"))
 			}
 		}
 		return nil
@@ -123,6 +124,15 @@ func indent(s string) string {
 		lines[i] = "    " + line
 	}
 	return strings.Join(lines, "\n")
+}
+
+// padRight pads s with spaces to the given visible width.
+func padRight(s string, width int) string {
+	n := utf8.RuneCountInString(s)
+	if n >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-n)
 }
 
 func init() {

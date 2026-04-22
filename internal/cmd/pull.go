@@ -11,6 +11,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
+
 	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
 
@@ -58,18 +61,27 @@ var pullCmd = &cobra.Command{
 			return printPullJSON(results)
 		}
 
+		t := table.New().
+			Width(80).
+			Border(lipgloss.Border{}).
+			StyleFunc(func(row, col int) lipgloss.Style {
+				return lipgloss.NewStyle()
+			})
+
 		for _, r := range results {
 			dn := displayRepoName(r.Name)
 			if r.Error != nil {
-				fmt.Printf("  %s %-20s %s\n", errorIcon(), dn, errorStyle.Render(truncate(r.Error.Error(), 80)))
+				t.Row(errorIcon(), dn, errorStyle.Render(truncate(r.Error.Error(), 80)))
 			} else {
-				fmt.Printf("  %s %-20s %s\n", successIcon(), dn, dimStyle.Render(truncate(r.Output, 80)))
+				t.Row(successIcon(), dn, dimStyle.Render(truncate(r.Output, 80)))
 			}
 		}
 
 		for _, name := range skipped {
-			fmt.Printf("  %s %-20s %s\n", warnIcon(), displayRepoName(name), dimStyle.Render("not cloned (use 'mrepo sync')"))
+			t.Row(warnIcon(), displayRepoName(name), dimStyle.Render("not cloned (use 'mrepo sync')"))
 		}
+
+		fmt.Println(t.Render())
 		return nil
 	},
 }

@@ -10,6 +10,9 @@ import (
 	"sort"
 	"time"
 
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
+
 	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
 
@@ -116,18 +119,28 @@ var syncCmd = &cobra.Command{
 			return enc.Encode(allResults)
 		}
 
+		t := table.New().
+			Width(80).
+			Border(lipgloss.Border{}).
+			StyleFunc(func(row, col int) lipgloss.Style {
+				return lipgloss.NewStyle()
+			})
+
 		for _, r := range allResults {
 			dn := displayRepoName(r.Name)
+			action := dimStyle.Render(fmt.Sprintf("[%s]", r.Action))
 			if r.Error != "" {
-				fmt.Printf("  %s %-20s %s %s\n", errorIcon(), dn, dimStyle.Render(fmt.Sprintf("[%s]", r.Action)), errorStyle.Render(truncate(r.Error, 60)))
+				t.Row(errorIcon(), dn, action, errorStyle.Render(truncate(r.Error, 60)))
 			} else {
 				output := truncate(r.Output, 60)
 				if output == "" {
 					output = "ok"
 				}
-				fmt.Printf("  %s %-20s %s %s\n", successIcon(), dn, dimStyle.Render(fmt.Sprintf("[%s]", r.Action)), dimStyle.Render(output))
+				t.Row(successIcon(), dn, action, dimStyle.Render(output))
 			}
 		}
+
+		fmt.Println(t.Render())
 		return nil
 	},
 }

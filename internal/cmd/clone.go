@@ -10,6 +10,9 @@ import (
 	"sort"
 	"time"
 
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
+
 	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
 
@@ -72,13 +75,22 @@ var cloneCmd = &cobra.Command{
 			return printCloneJSON(results)
 		}
 
+		t := table.New().
+			Width(80).
+			Border(lipgloss.Border{}).
+			StyleFunc(func(row, col int) lipgloss.Style {
+				return lipgloss.NewStyle()
+			})
+
 		for _, r := range results {
 			if r.Error != nil {
-				fmt.Printf("  %s %-20s %s\n", errorIcon(), r.Name, errorStyle.Render(truncate(r.Error.Error(), 80)))
+				t.Row(errorIcon(), r.Name, errorStyle.Render(truncate(r.Error.Error(), 80)))
 			} else {
-				fmt.Printf("  %s %-20s %s\n", cloneIcon(), r.Name, dimStyle.Render(truncate(r.Output, 80)))
+				t.Row(cloneIcon(), r.Name, dimStyle.Render(truncate(r.Output, 80)))
 			}
 		}
+
+		fmt.Println(t.Render())
 		return nil
 	},
 }

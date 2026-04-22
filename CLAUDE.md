@@ -33,7 +33,7 @@ internal/
                                validation on Load (path/remote format checks)
   git/                         Git CLI wrappers (status, clone, pull, fetch, scan,
                                repo info, log), parallelDo generic helper
-  tui/                         Bubble Tea TUI with lipgloss v2 styling
+  tui/                         Bubble Tea v2 TUI with bubbles/v2/table + lipgloss v2
   version/                     Version string, injected via -ldflags at release
 ```
 
@@ -87,7 +87,8 @@ repos = ["backend", "frontend"]
 ### Key dependencies
 
 - `github.com/spf13/cobra` — CLI framework
-- `github.com/charmbracelet/bubbletea` + `charm.land/lipgloss/v2` — TUI
+- `charm.land/bubbletea/v2` + `charm.land/bubbles/v2` — TUI (interactive table widget)
+- `charm.land/lipgloss/v2` + `charm.land/lipgloss/v2/table` — styling + static table renderer (CLI output)
 - `golang.org/x/sync/errgroup` — bounded parallelism
 - `github.com/pelletier/go-toml/v2` + `gopkg.in/yaml.v3` — config formats
 
@@ -97,6 +98,10 @@ repos = ["backend", "frontend"]
 - `filterRepos()` in `cmd/root.go` centralizes `--group` filtering for all commands
 - `truncate()` in `cmd/pull.go` counts runes (not bytes) for safe UTF-8 truncation
 - `validateCloneTarget()` prevents path traversal and flag injection in clone operations
+- CLI table output uses `lipgloss/v2/table` (static renderer with `StyleFunc` for per-cell coloring); TUI uses `bubbles/v2/table` (interactive widget with cursor, keyboard navigation)
+- `padRight(s, width)` in `cmd/forall.go` pads plain-text strings — only used by `forall` (multi-line output不适合table)
+- Icons use Unicode (`✓ ✗ ⚠ ↓ → ○ ● ↑`) for visual clarity; table libraries handle correct width measurement via `displaywidth`
+- `ensureGitignore()` / `removeFromGitignore()` auto-manage `.gitignore` entries for sub-repos
 
 ### Conventions
 

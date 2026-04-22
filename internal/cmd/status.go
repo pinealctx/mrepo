@@ -7,8 +7,10 @@ import (
 	"os"
 	"runtime"
 	"sort"
-	"strings"
 	"time"
+
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
 
 	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
@@ -52,14 +54,21 @@ var statusCmd = &cobra.Command{
 }
 
 func printStatusTable(statuses []*git.RepoStatus) {
-	// Header.
-	fmt.Printf("  %s  %s  %s  %s\n",
-		boldStyle.Width(20).Render("REPO"),
-		boldStyle.Width(20).Render("BRANCH"),
-		boldStyle.Width(10).Render("STATUS"),
-		boldStyle.Render("AHEAD/BEHIND"),
-	)
-	fmt.Println(dimStyle.Render(strings.Repeat("─", 72)))
+	t := table.New().
+		Headers("REPO", "BRANCH", "STATUS", "AHEAD/BEHIND").
+		Width(80).
+		Border(lipgloss.NormalBorder()).
+		BorderTop(false).BorderBottom(false).
+		BorderLeft(false).BorderRight(false).
+		BorderHeader(true).
+		BorderColumn(false).
+		BorderRow(false).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == table.HeaderRow {
+				return boldStyle
+			}
+			return lipgloss.NewStyle()
+		})
 
 	missingCount := 0
 	for _, s := range statuses {
@@ -73,33 +82,25 @@ func printStatusTable(statuses []*git.RepoStatus) {
 			nameStyle = rootStyle
 		}
 
-		// Status icon.
-		icon := cleanStyle.Render("○")
+		icon := cleanStyle.Render("✓")
 		if s.Worktree == git.StatusMissing {
-			icon = warnStyle.Render("!")
+			icon = warnStyle.Render("⚠")
 		} else if s.Worktree != git.StatusClean {
 			icon = dirtyStyle.Render("●")
 		}
 
+		nameStr := icon + " " + nameStyle.Render(displayName)
+
 		if s.Worktree == git.StatusMissing && !isRootRepo(s.Name) {
-			fmt.Printf("  %s  %s  %s\n",
-				icon,
-				nameStyle.Width(20).Render(displayName),
-				missingStyle.Render("MISSING"),
-			)
+			t.Row(nameStr, "", missingStyle.Render("MISSING"), "")
 			continue
 		}
 
 		if s.Error != nil {
-			fmt.Printf("  %s  %s  %s\n",
-				icon,
-				nameStyle.Width(20).Render(displayName),
-				errorStyle.Render(s.Error.Error()),
-			)
+			t.Row(nameStr, "", errorStyle.Render(s.Error.Error()), "")
 			continue
 		}
 
-		// Ahead/behind.
 		aheadBehind := dimStyle.Render("-")
 		if s.Ahead > 0 || s.Behind > 0 {
 			if s.Ahead > 0 && s.Behind > 0 {
@@ -113,14 +114,10 @@ func printStatusTable(statuses []*git.RepoStatus) {
 			}
 		}
 
-		fmt.Printf("  %s  %s  %s  %s  %s\n",
-			icon,
-			nameStyle.Width(20).Render(displayName),
-			dimStyle.Width(20).Render(s.Branch),
-			formatStatus(s.StatusString()),
-			aheadBehind,
-		)
+		t.Row(nameStr, dimStyle.Render(s.Branch), formatStatus(s.StatusString()), aheadBehind)
 	}
+
+	fmt.Println(t.Render())
 
 	if missingCount > 0 {
 		fmt.Printf("\n  %s %s\n",

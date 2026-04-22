@@ -9,11 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/table"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
 	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
-
-	"charm.land/lipgloss/v2"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 type tab int
@@ -30,12 +31,13 @@ type repoDetail struct {
 
 type model struct {
 	rootDir  string
-	rootName string // display name for root repo (e.g., "nexus/")
+	rootName string
 	repos    map[string]string
 	config   *config.Config
 
-	cursor   int
-	items    []string
+	tbl   table.Model
+	items []string // repo names in table order (maps cursor → name)
+
 	details  map[string]*repoDetail
 	selected string
 	tab      tab
@@ -61,9 +63,6 @@ var (
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#9CA3AF"))
-
-	selectedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#7C3AED"))
 
 	cleanStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#22C55E"))
@@ -128,7 +127,6 @@ func pullAll(rootDir string, repos map[string]string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
-		// Only pull repos that exist on disk.
 		existing := make(map[string]string)
 		for name, path := range repos {
 			if !isMissing(rootDir, path) {
@@ -161,10 +159,9 @@ func fetchAll(rootDir string, repos map[string]string) tea.Cmd {
 			}
 		}
 
-		results := git.FetchAll(ctx, rootDir, existing, runtime.NumCPU())
-		details := make(map[string]*repoDetail, len(results))
-		// After fetch, refresh full status.
+		_ = git.FetchAll(ctx, rootDir, existing, runtime.NumCPU())
 		statuses := git.GetStatuses(ctx, rootDir, repos, runtime.NumCPU())
+		details := make(map[string]*repoDetail, len(statuses))
 		for _, s := range statuses {
 			details[s.Name] = &repoDetail{Status: s}
 		}
@@ -216,7 +213,6 @@ func syncAll(rootDir string, cfg *config.Config, repos map[string]string) tea.Cm
 
 		out := make(map[string]string)
 
-		// Clone missing repos.
 		cloneSpecs := make(map[string]git.CloneSpec)
 		for name, repo := range cfg.Repos {
 			if repo.Remote != "" && isMissing(rootDir, repo.Path) {
@@ -238,7 +234,6 @@ func syncAll(rootDir string, cfg *config.Config, repos map[string]string) tea.Cm
 			}
 		}
 
-		// Pull existing repos.
 		existing := make(map[string]string)
 		for name, path := range repos {
 			if !isMissing(rootDir, path) {
@@ -296,15 +291,33 @@ func NewModel(rootDir string, cfg *config.Config) model {
 	}
 
 	names := cfg.SortedRepoNames()
-
-	// Compute root display name (e.g., "nexus/").
 	rootDisplayName := filepath.Base(rootDir) + "/"
+
+	columns := []table.Column{
+		{Title: "REPO", Width: 22},
+		{Title: "BRANCH", Width: 18},
+		{Title: "STATUS", Width: 10},
+		{Title: "AHEAD/BEHIND", Width: 14},
+	}
+
+	tbl := table.New(
+		table.WithColumns(columns),
+		table.WithFocused(true),
+		table.WithHeight(len(names)),
+	)
+
+	tblStyles := table.DefaultStyles()
+	tblStyles.Header = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#9CA3AF")).Padding(0)
+	tblStyles.Selected = lipgloss.NewStyle().Background(lipgloss.Color("#2D1B69")).Padding(0)
+	tblStyles.Cell = lipgloss.NewStyle().Padding(0)
+	tbl.SetStyles(tblStyles)
 
 	return model{
 		rootDir:      rootDir,
 		rootName:     rootDisplayName,
 		repos:        repos,
 		config:       cfg,
+		tbl:          tbl,
 		items:        names,
 		details:      make(map[string]*repoDetail),
 		pullResults:  make(map[string]string),
@@ -312,7 +325,6 @@ func NewModel(rootDir string, cfg *config.Config) model {
 	}
 }
 
-// displayName returns a human-friendly name for the repo.
 func (m *model) displayName(name string) string {
 	if name == "." {
 		return m.rootName
@@ -329,21 +341,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.tbl.SetWidth(msg.Width)
+		m.tbl.SetHeight(msg.Height - 4)
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-				m.tab = tabStatus
-			}
-		case "down", "j":
-			if m.cursor < len(m.items)-1 {
-				m.cursor++
-				m.tab = tabStatus
+		case "up", "k", "down", "j":
+			if m.selected == "" {
+				var cmd tea.Cmd
+				m.tbl, cmd = m.tbl.Update(msg)
+				return m, cmd
 			}
 		case "s":
 			m.loading = true
@@ -370,10 +380,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, syncAll(m.rootDir, m.config, m.repos)
 			}
 		case "enter":
-			if len(m.items) > 0 {
-				m.selected = m.items[m.cursor]
-				m.tab = tabLog
-				return m, loadLogForRepo(m.rootDir, m.repos[m.selected])
+			if m.selected == "" {
+				cursor := m.tbl.Cursor()
+				if cursor < len(m.items) {
+					m.selected = m.items[cursor]
+					m.tab = tabLog
+					return m, loadLogForRepo(m.rootDir, m.repos[m.selected])
+				}
 			}
 		case "esc":
 			m.selected = ""
@@ -383,6 +396,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.details = msg.details
 		m.loading = false
+		m.buildTableRows()
 		return m, nil
 
 	case pullMsg:
@@ -414,14 +428,75 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) View() string {
+func (m *model) buildTableRows() {
+	rows := make([]table.Row, 0, len(m.items))
+	for _, name := range m.items {
+		detail, ok := m.details[name]
+		if !ok || detail.Status == nil {
+			rows = append(rows, table.Row{m.displayName(name), "", dimStyle.Render("loading..."), ""})
+			continue
+		}
+
+		s := detail.Status
+
+		icon := cleanStyle.Render("○")
+		if s.Worktree == git.StatusMissing {
+			icon = errorStyle.Render("●")
+		} else if s.Worktree != git.StatusClean {
+			icon = dirtyStyle.Render("●")
+		}
+
+		nameStr := icon + " " + m.displayName(name)
+
+		if s.Worktree == git.StatusMissing {
+			rows = append(rows, table.Row{nameStr, "", missingStyle.Render("MISSING"), ""})
+			continue
+		}
+
+		if s.Error != nil {
+			rows = append(rows, table.Row{nameStr, "", errorStyle.Render(s.Error.Error()), ""})
+			continue
+		}
+
+		var statusText string
+		switch s.Worktree {
+		case git.StatusClean:
+			statusText = cleanStyle.Render("clean")
+		case git.StatusDirty:
+			statusText = dirtyStyle.Render("dirty")
+		case git.StatusStaged:
+			statusText = stagedStyle.Render("staged")
+		default:
+			statusText = dirtyStyle.Render(s.StatusString())
+		}
+
+		aheadBehind := dimStyle.Render("-")
+		if s.Ahead > 0 || s.Behind > 0 {
+			if s.Ahead > 0 && s.Behind > 0 {
+				aheadBehind = fmt.Sprintf("%s %s",
+					cleanStyle.Render(fmt.Sprintf("↑%d", s.Ahead)),
+					dirtyStyle.Render(fmt.Sprintf("↓%d", s.Behind)))
+			} else if s.Ahead > 0 {
+				aheadBehind = cleanStyle.Render(fmt.Sprintf("↑%d", s.Ahead))
+			} else {
+				aheadBehind = dirtyStyle.Render(fmt.Sprintf("↓%d", s.Behind))
+			}
+		}
+
+		rows = append(rows, table.Row{nameStr, dimStyle.Render(s.Branch), statusText, aheadBehind})
+	}
+	m.tbl.SetRows(rows)
+}
+
+func (m model) View() tea.View {
 	if m.width == 0 {
-		return "Loading..."
+		v := tea.NewView("Loading...")
+		v.AltScreen = true
+		return v
 	}
 
 	var b strings.Builder
 
-	// Title bar
 	title := titleStyle.Render("mrepo - Monorepo Manager")
 	b.WriteString(title)
 	b.WriteString("\n")
@@ -429,10 +504,19 @@ func (m model) View() string {
 	if m.selected != "" {
 		b.WriteString(m.renderDetail())
 	} else {
-		b.WriteString(m.renderList())
+		b.WriteString(m.tbl.View())
+		b.WriteString("\n")
+
+		if m.pulling {
+			b.WriteString(dirtyStyle.Render("  Pulling..."))
+			b.WriteString("\n")
+		}
+		if m.cloning {
+			b.WriteString(dirtyStyle.Render("  Syncing..."))
+			b.WriteString("\n")
+		}
 	}
 
-	// Help bar
 	var help string
 	if m.selected != "" {
 		help = helpStyle.Render("[esc] back  [q] quit")
@@ -441,113 +525,9 @@ func (m model) View() string {
 	}
 	b.WriteString(help)
 
-	return b.String()
-}
-
-func (m *model) renderList() string {
-	var b strings.Builder
-
-	// Header
-	header := fmt.Sprintf("  %-20s %-20s %-10s %s",
-		"REPO", "BRANCH", "STATUS", "AHEAD/BEHIND")
-	b.WriteString(headerStyle.Render(header))
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(strings.Repeat("-", 72)))
-	b.WriteString("\n")
-
-	for i, name := range m.items {
-		marker := " "
-		if i == m.cursor {
-			marker = selectedStyle.Render(">")
-		}
-
-		detail, ok := m.details[name]
-		if !ok {
-			fmt.Fprintf(&b, " %s  %-20s loading...\n", marker, m.displayName(name))
-			continue
-		}
-
-		s := detail.Status
-		if s == nil {
-			continue
-		}
-
-		// Missing repo.
-		if s.Worktree == git.StatusMissing {
-			nameStr := m.displayName(name)
-			if i == m.cursor {
-				nameStr = selectedStyle.Render(nameStr)
-			}
-			fmt.Fprintf(&b, " %s  %-20s %s\n", marker, nameStr, missingStyle.Render("MISSING"))
-			continue
-		}
-
-		if s.Error != nil {
-			fmt.Fprintf(&b, " %s  %-20s %s\n", marker, m.displayName(name), errorStyle.Render(s.Error.Error()))
-			continue
-		}
-
-		// Status icon
-		icon := "○"
-		var statusText string
-		switch s.Worktree {
-		case git.StatusClean:
-			statusText = cleanStyle.Render("clean")
-		case git.StatusDirty:
-			icon = "●"
-			statusText = dirtyStyle.Render("dirty")
-		case git.StatusStaged:
-			icon = "●"
-			statusText = stagedStyle.Render("staged")
-		default:
-			icon = "●"
-			statusText = dirtyStyle.Render(s.StatusString())
-		}
-
-		aheadBehind := dimStyle.Render(fmt.Sprintf("↑%d ↓%d", s.Ahead, s.Behind))
-		if s.Ahead == 0 && s.Behind == 0 {
-			aheadBehind = dimStyle.Render("-")
-		}
-
-		nameStr := m.displayName(name)
-		if i == m.cursor {
-			nameStr = selectedStyle.Render(nameStr)
-		}
-
-		// Pull/clone result
-		pullInfo := ""
-		if r, has := m.pullResults[name]; has {
-			if strings.HasPrefix(r, "FAIL:") {
-				pullInfo = " " + errorStyle.Render(r)
-			} else {
-				pullInfo = " " + cleanStyle.Render("pulled")
-			}
-		}
-		if r, has := m.cloneResults[name]; has {
-			if strings.HasPrefix(r, "FAIL:") || strings.HasPrefix(r, "CLONE FAIL:") || strings.HasPrefix(r, "PULL FAIL:") {
-				pullInfo = " " + errorStyle.Render(r)
-			} else {
-				pullInfo = " " + cleanStyle.Render(r)
-			}
-		}
-
-		fmt.Fprintf(&b, " %s %s %-20s %-20s %-10s %s%s\n",
-			marker, icon, nameStr, s.Branch, statusText, aheadBehind, pullInfo)
-	}
-
-	if m.pulling {
-		b.WriteString("\n")
-		b.WriteString(dirtyStyle.Render("  Pulling..."))
-		b.WriteString("\n")
-	}
-
-	if m.cloning {
-		b.WriteString("\n")
-		b.WriteString(dirtyStyle.Render("  Syncing..."))
-		b.WriteString("\n")
-	}
-
-	return b.String()
+	v := tea.NewView(b.String())
+	v.AltScreen = true
+	return v
 }
 
 func (m *model) renderDetail() string {
@@ -579,7 +559,7 @@ func (m *model) renderDetail() string {
 		b.WriteString("\n")
 		b.WriteString(headerStyle.Render("  Recent commits:"))
 		b.WriteString("\n")
-		for _, line := range strings.Split(detail.Log, "\n") {
+		for line := range strings.SplitSeq(detail.Log, "\n") {
 			b.WriteString(dimStyle.Render("  " + line))
 			b.WriteString("\n")
 		}
@@ -589,10 +569,7 @@ func (m *model) renderDetail() string {
 }
 
 func Run(rootDir string, cfg *config.Config) error {
-	p := tea.NewProgram(
-		NewModel(rootDir, cfg),
-		tea.WithAltScreen(),
-	)
+	p := tea.NewProgram(NewModel(rootDir, cfg))
 	_, err := p.Run()
 	return err
 }

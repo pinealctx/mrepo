@@ -31,7 +31,7 @@ var (
 // Prefixes for different result types.
 func successIcon() string { return successStyle.Render("✓") }
 func errorIcon() string   { return errorStyle.Render("✗") }
-func warnIcon() string    { return warnStyle.Render("!") }
+func warnIcon() string    { return warnStyle.Render("⚠") }
 func cloneIcon() string   { return successStyle.Render("↓") }
 func infoIcon() string    { return infoStyle.Render("→") }
 
