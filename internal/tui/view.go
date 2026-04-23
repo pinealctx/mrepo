@@ -63,20 +63,25 @@ func (m model) View() tea.View {
 	// lipgloss Width/Height handles all content sizing and border rendering.
 	// No manual width calculation — lipgloss uses displaywidth internally,
 	// so content sizing and border rendering are always consistent.
+	innerW := leftW - 2 // inner width = box width minus left+right border
+
 	repoBox := sectionBoxForFocus(m.focus == focusRepos).
 		Width(leftW).
 		Height(repoContentH + 2).
-		Render(m.renderReposSection(repoContentH))
+		MaxHeight(repoContentH + 2).
+		Render(m.renderReposSection(repoContentH, innerW))
 
 	branchBox := sectionBoxForFocus(m.focus == focusBranches).
 		Width(leftW).
 		Height(branchContentH + 2).
-		Render(m.renderBranchSection(branchContentH))
+		MaxHeight(branchContentH + 2).
+		Render(m.renderBranchSection(branchContentH, innerW))
 
 	fileBox := sectionBoxForFocus(m.focus == focusFiles).
 		Width(leftW).
 		Height(fileContentH + 2).
-		Render(m.renderFilesSection(fileContentH))
+		MaxHeight(fileContentH + 2).
+		Render(m.renderFilesSection(fileContentH, innerW))
 
 	leftPanel := lipgloss.JoinVertical(lipgloss.Left, repoBox, branchBox, fileBox)
 
@@ -109,19 +114,27 @@ func sectionBoxForFocus(focused bool) lipgloss.Style {
 	return sectionBox
 }
 
-func (m model) renderReposSection(maxLines int) string {
-	var b strings.Builder
-	b.WriteString(dimStyle.Render("Repos"))
-	b.WriteString("\n")
+// truncLine truncates an ANSI-styled string to fit within maxW display columns.
+var truncStyle lipgloss.Style
+
+func truncLine(s string, maxW int) string {
+	if lipgloss.Width(s) <= maxW {
+		return s
+	}
+	return truncStyle.MaxWidth(maxW).Render(s)
+}
+
+func (m model) renderReposSection(maxLines, maxW int) string {
+	var lines []string
+	lines = append(lines, dimStyle.Render("Repos"))
 	contentLines := maxLines - 1 // -1 for header
 	start, end := visibleRange(m.repoCursor, len(m.items), contentLines)
 	for i := start; i < end; i++ {
 		name := m.items[i]
 		s := m.details[name]
-		b.WriteString(m.renderRepoRow(name, s, i))
-		b.WriteString("\n")
+		lines = append(lines, truncLine(m.renderRepoRow(name, s, i), maxW))
 	}
-	return b.String()
+	return strings.Join(lines, "\n")
 }
 
 func (m model) renderRepoRow(name string, s *git.RepoStatus, idx int) string {
@@ -154,23 +167,21 @@ func (m model) renderRepoRow(name string, s *git.RepoStatus, idx int) string {
 	return fmt.Sprintf("%s%s %s %s", fi, icon, disp, branch) + ab
 }
 
-func (m model) renderBranchSection(maxLines int) string {
-	var b strings.Builder
-	b.WriteString(dimStyle.Render("Branches"))
-	b.WriteString("\n")
+func (m model) renderBranchSection(maxLines, maxW int) string {
+	var lines []string
+	lines = append(lines, dimStyle.Render("Branches"))
 	s := m.details[m.selected]
 	if s == nil {
-		return b.String()
+		return strings.Join(lines, "\n")
 	}
 	status := m.formatStatus(s)
 	info := fmt.Sprintf("%s %s", s.Branch, status)
 	if s.Remote != "" {
 		info += dimStyle.Render(fmt.Sprintf(" %s", s.Remote))
 	}
-	b.WriteString(info)
-	b.WriteString("\n")
+	lines = append(lines, truncLine(info, maxW))
 	if m.loadingDetail {
-		return b.String()
+		return strings.Join(lines, "\n")
 	}
 	remaining := maxLines - 2 // -2 for header + status line
 	start, end := visibleRange(m.branchCursor, len(m.branches), remaining)
@@ -197,21 +208,21 @@ func (m model) renderBranchSection(maxLines int) string {
 		if br.Behind > 0 {
 			ab += dirtyStyle.Render(fmt.Sprintf(" ↓%d", br.Behind))
 		}
-		fmt.Fprintf(&b, "%s%s%s%s%s\n", cursor, marker, name, upstream, ab)
+		line := fmt.Sprintf("%s%s%s%s%s", cursor, marker, name, upstream, ab)
+		lines = append(lines, truncLine(line, maxW))
 	}
-	return b.String()
+	return strings.Join(lines, "\n")
 }
 
-func (m model) renderFilesSection(maxLines int) string {
-	var b strings.Builder
-	b.WriteString(dimStyle.Render("Files"))
-	b.WriteString("\n")
+func (m model) renderFilesSection(maxLines, maxW int) string {
+	var lines []string
+	lines = append(lines, dimStyle.Render("Files"))
 	if m.loadingDetail {
-		return b.String()
+		return strings.Join(lines, "\n")
 	}
 	if len(m.fileTree) == 0 {
-		b.WriteString(cleanStyle.Render("  clean"))
-		return b.String()
+		lines = append(lines, cleanStyle.Render("  clean"))
+		return strings.Join(lines, "\n")
 	}
 	start, end := visibleRange(m.fileCursor, len(m.fileTree), maxLines-1)
 	for i := start; i < end; i++ {
@@ -221,15 +232,17 @@ func (m model) renderFilesSection(maxLines int) string {
 			cursor = focusDotStyle.Render(" >")
 		}
 		indent := strings.Repeat("  ", node.Indent)
+		var line string
 		if node.IsDir {
 			parts := strings.Split(node.Path, "/")
-			fmt.Fprintf(&b, "%s%s%s\n", cursor, indent, dimStyle.Render(parts[len(parts)-1]+"/"))
+			line = fmt.Sprintf("%s%s%s", cursor, indent, dimStyle.Render(parts[len(parts)-1]+"/"))
 		} else {
 			parts := strings.Split(node.Path, "/")
-			fmt.Fprintf(&b, "%s%s%s%s\n", cursor, indent, formatFileStatus(node.Status), parts[len(parts)-1])
+			line = fmt.Sprintf("%s%s%s%s", cursor, indent, formatFileStatus(node.Status), parts[len(parts)-1])
 		}
+		lines = append(lines, truncLine(line, maxW))
 	}
-	return b.String()
+	return strings.Join(lines, "\n")
 }
 
 func (m model) renderDiffPanel(height int) string {
@@ -239,8 +252,8 @@ func (m model) renderDiffPanel(height int) string {
 	if m.diffContent.Error != nil {
 		return errorStyle.Render("  " + m.diffContent.Error.Error())
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "  %s\n", accentStyle.Render(m.diffContent.Path))
+	var out []string
+	out = append(out, "  "+accentStyle.Render(m.diffContent.Path))
 	lines := strings.Split(m.diffContent.Content, "\n")
 	// Remove trailing empty line from split.
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
@@ -248,28 +261,28 @@ func (m model) renderDiffPanel(height int) string {
 	}
 	diffLines := height - 1 // -1 for header line
 	if diffLines < 1 {
-		return b.String()
+		return strings.Join(out, "\n")
 	}
 	maxOff := max(0, len(lines)-diffLines)
-	m.diffScrollOff = min(m.diffScrollOff, maxOff)
-	end := min(m.diffScrollOff+diffLines, len(lines))
-	for _, line := range lines[m.diffScrollOff:end] {
+	scrollOff := min(m.diffScrollOff, maxOff)
+	end := min(scrollOff+diffLines, len(lines))
+	for _, line := range lines[scrollOff:end] {
 		switch {
 		case strings.HasPrefix(line, "diff --git") || strings.HasPrefix(line, "index "):
-			fmt.Fprintf(&b, "  %s\n", dimStyle.Render(line))
+			out = append(out, "  "+dimStyle.Render(line))
 		case strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++"):
-			fmt.Fprintf(&b, "  %s\n", dimStyle.Render(line))
+			out = append(out, "  "+dimStyle.Render(line))
 		case strings.HasPrefix(line, "@@"):
-			fmt.Fprintf(&b, "  %s\n", accentStyle.Render(line))
+			out = append(out, "  "+accentStyle.Render(line))
 		case strings.HasPrefix(line, "+"):
-			fmt.Fprintf(&b, "  %s\n", cleanStyle.Render(line))
+			out = append(out, "  "+cleanStyle.Render(line))
 		case strings.HasPrefix(line, "-"):
-			fmt.Fprintf(&b, "  %s\n", errorStyle.Render(line))
+			out = append(out, "  "+errorStyle.Render(line))
 		default:
-			fmt.Fprintf(&b, "  %s\n", line)
+			out = append(out, "  "+line)
 		}
 	}
-	return b.String()
+	return strings.Join(out, "\n")
 }
 
 func (m model) renderHelp() string {
@@ -291,7 +304,11 @@ func (m model) renderHelp() string {
 		keys = "[j/k/pgup/pgdn] scroll"
 	}
 
-	return helpStyle.Render(fmt.Sprintf(" %s  [tab] switch %s [q]", brand, keys))
+	help := helpStyle.Render(fmt.Sprintf(" %s  [tab] switch %s [q]", brand, keys))
+	if m.statusText != "" {
+		help += "  " + dimStyle.Render(m.statusText)
+	}
+	return help
 }
 
 // --- Format helpers ---

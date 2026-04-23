@@ -91,6 +91,12 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	// Normalize: empty-name repo with path "." is the root repo.
+	if repo, ok := cfg.Repos[""]; ok && repo.Path == "." {
+		delete(cfg.Repos, "")
+		cfg.Repos["."] = repo
+	}
+
 	// Validate repo entries.
 	for name, repo := range cfg.Repos {
 		if repo.Path == "" {

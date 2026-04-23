@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -36,7 +38,6 @@ type (
 	statusMsg struct{ details map[string]*git.RepoStatus }
 	detailMsg struct {
 		branches []git.BranchInfo
-		remotes  []git.RemoteBranchInfo
 		files    []git.DiffFile
 		err      error
 	}
@@ -62,11 +63,10 @@ type model struct {
 	focus focus
 
 	// Detail panel data
-	branches       []git.BranchInfo
-	remoteBranches []git.RemoteBranchInfo
-	diffFiles      []git.DiffFile
-	fileTree       []fileTreeNode
-	diffContent    *git.FileDiff
+	branches    []git.BranchInfo
+	diffFiles   []git.DiffFile
+	fileTree    []fileTreeNode
+	diffContent *git.FileDiff
 
 	// Cursors
 	repoCursor    int
@@ -77,12 +77,10 @@ type model struct {
 	// Loading
 	loading       bool
 	loadingDetail bool
-	pulling       bool
-	cloning       bool
+	operating     bool // true while pull/clone/sync is in progress
 
-	// Results
-	pullResults  map[string]string
-	cloneResults map[string]string
+	// Status bar message (shown after operations complete)
+	statusText string
 
 	width  int
 	height int
@@ -99,28 +97,47 @@ func NewModel(rootDir string, cfg *config.Config, filteredRepos map[string]*conf
 	for name, repo := range filteredRepos {
 		repos[name] = repo.Path
 	}
+
+	// Build sorted item list from filteredRepos (not full config),
+	// keeping root repo "." first when present.
+	items := make([]string, 0, len(filteredRepos))
+	for name := range filteredRepos {
+		items = append(items, name)
+	}
+	sort.Strings(items)
+	for i, n := range items {
+		if n == "." {
+			if i != 0 {
+				items = append(items[:i], items[i+1:]...)
+				items = append([]string{"."}, items...)
+			}
+			break
+		}
+	}
+
 	absRoot, err := filepath.Abs(rootDir)
 	rootName := filepath.Base(absRoot) + "/"
 	if err != nil {
 		rootName = filepath.Base(rootDir) + "/"
 	}
 	return model{
-		rootDir:      rootDir,
-		rootName:     rootName,
-		repos:        repos,
-		config:       cfg,
-		items:        cfg.SortedRepoNames(),
-		details:      make(map[string]*git.RepoStatus),
-		pullResults:  make(map[string]string),
-		cloneResults: make(map[string]string),
-		focus:        focusRepos,
-		version:      ver,
+		rootDir:  rootDir,
+		rootName: rootName,
+		repos:    repos,
+		config:   cfg,
+		items:    items,
+		details:  make(map[string]*git.RepoStatus),
+		focus:    focusRepos,
+		version:  ver,
 	}
 }
 
 func (m *model) displayName(name string) string {
-	if name == "." {
-		return m.rootName
+	if name == "." || name == "" || m.repos[name] == "." {
+		if m.rootName == "./" || m.rootName == "" {
+			return "<root>"
+		}
+		return m.rootName + " <root>"
 	}
 	return name
 }
@@ -165,25 +182,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fileTree = nil
 		} else {
 			m.branches = msg.branches
-			m.remoteBranches = msg.remotes
 			m.diffFiles = msg.files
 			m.fileTree = buildFileTree(msg.files)
 		}
 		return m, nil
 
 	case pullMsg:
-		m.pulling = false
-		m.pullResults = msg.results
+		m.operating = false
+		m.statusText = summarizeResults("pull", msg.results)
 		return m, refreshStatus(m.rootDir, m.repos)
 
 	case cloneMsg:
-		m.cloning = false
-		m.cloneResults = msg.results
+		m.operating = false
+		m.statusText = summarizeResults("clone", msg.results)
 		return m, refreshStatus(m.rootDir, m.repos)
 
 	case syncMsg:
-		m.cloning = false
-		m.cloneResults = msg.results
+		m.operating = false
+		m.statusText = summarizeResults("sync", msg.results)
 		return m, refreshStatus(m.rootDir, m.repos)
 
 	case fileDiffMsg:
@@ -206,24 +222,24 @@ func (m model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, refreshStatus(m.rootDir, m.repos)
 	case "p":
-		if !m.pulling && !m.cloning {
-			m.pulling = true
-			m.pullResults = make(map[string]string)
+		if !m.operating {
+			m.operating = true
+			m.statusText = "pulling..."
 			return m, pullAll(m.rootDir, m.repos)
 		}
 	case "f":
 		m.loading = true
 		return m, fetchAllRepos(m.rootDir, m.repos)
 	case "c":
-		if !m.cloning && !m.pulling {
-			m.cloning = true
-			m.cloneResults = make(map[string]string)
+		if !m.operating {
+			m.operating = true
+			m.statusText = "cloning..."
 			return m, cloneMissing(m.rootDir, m.config, m.repos)
 		}
 	case "S":
-		if !m.cloning && !m.pulling {
-			m.cloning = true
-			m.cloneResults = make(map[string]string)
+		if !m.operating {
+			m.operating = true
+			m.statusText = "syncing..."
 			return m, syncAll(m.rootDir, m.config, m.repos)
 		}
 	}
@@ -259,59 +275,44 @@ func (m model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) updateReposNav(key string) (tea.Model, tea.Cmd) {
+// moveCursor adjusts a cursor position by key direction within [0, count).
+// Returns the new position and whether it changed.
+func moveCursor(cursor, count int, key string) (int, bool) {
 	switch key {
 	case "up", "k":
-		if m.repoCursor > 0 {
-			m.repoCursor--
-			return m.switchRepo()
+		if cursor > 0 {
+			return cursor - 1, true
 		}
 	case "down", "j":
-		if m.repoCursor < len(m.items)-1 {
-			m.repoCursor++
-			return m.switchRepo()
+		if cursor < count-1 {
+			return cursor + 1, true
 		}
+	}
+	return cursor, false
+}
+
+func (m model) updateReposNav(key string) (tea.Model, tea.Cmd) {
+	pos, moved := moveCursor(m.repoCursor, len(m.items), key)
+	if moved {
+		m.repoCursor = pos
+		return m.switchRepo()
 	}
 	return m, nil
 }
 
 func (m model) updateBranchesNav(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "up", "k":
-		if m.branchCursor > 0 {
-			m.branchCursor--
-		}
-	case "down", "j":
-		if m.branchCursor < len(m.branches)-1 {
-			m.branchCursor++
-		}
-	case "enter":
-		if len(m.branches) > 0 && m.branchCursor < len(m.branches) && !m.branches[m.branchCursor].Current {
-			m.confirmCheckout = true
-			m.checkoutBranch = m.branches[m.branchCursor].Name
-		}
+	m.branchCursor, _ = moveCursor(m.branchCursor, len(m.branches), key)
+	if key == "enter" && len(m.branches) > 0 && m.branchCursor < len(m.branches) && !m.branches[m.branchCursor].Current {
+		m.confirmCheckout = true
+		m.checkoutBranch = m.branches[m.branchCursor].Name
 	}
 	return m, nil
 }
 
 func (m model) updateFilesNav(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "up", "k":
-		if m.fileCursor > 0 {
-			m.fileCursor--
-		}
-	case "down", "j":
-		if m.fileCursor < len(m.fileTree)-1 {
-			m.fileCursor++
-		}
-	case "enter":
-		if m.fileCursor >= 0 && m.fileCursor < len(m.fileTree) && !m.fileTree[m.fileCursor].IsDir {
-			return m, loadFileDiffForRepo(m.rootDir, m.repos[m.selected], m.fileTree[m.fileCursor].Path, m.fileTree[m.fileCursor].Status == "?")
-		}
-	case "pgdown":
-		m.diffScrollOff += max(5, m.height/3)
-	case "pgup":
-		m.diffScrollOff = max(0, m.diffScrollOff-max(5, m.height/3))
+	m.fileCursor, _ = moveCursor(m.fileCursor, len(m.fileTree), key)
+	if key == "enter" && m.fileCursor < len(m.fileTree) && !m.fileTree[m.fileCursor].IsDir {
+		return m, loadFileDiffForRepo(m.rootDir, m.repos[m.selected], m.fileTree[m.fileCursor].Path, m.fileTree[m.fileCursor].Status == "?")
 	}
 	return m, nil
 }
@@ -364,8 +365,8 @@ func (m model) switchRepo() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.selected = m.items[m.repoCursor]
+	m.focus = focusRepos
 	m.branches = nil
-	m.remoteBranches = nil
 	m.diffFiles = nil
 	m.fileTree = nil
 	m.diffContent = nil
@@ -374,6 +375,25 @@ func (m model) switchRepo() (tea.Model, tea.Cmd) {
 	m.diffScrollOff = 0
 	m.loadingDetail = true
 	return m, loadDetailForRepo(m.rootDir, m.repos[m.selected])
+}
+
+// --- Helpers ---
+
+func summarizeResults(op string, results map[string]string) string {
+	total := len(results)
+	if total == 0 {
+		return fmt.Sprintf("%s: nothing to do", op)
+	}
+	fails := 0
+	for _, v := range results {
+		if strings.HasPrefix(v, "FAIL") || strings.HasPrefix(v, "CLONE FAIL") || strings.HasPrefix(v, "PULL FAIL") {
+			fails++
+		}
+	}
+	if fails == 0 {
+		return fmt.Sprintf("%s: %d ok", op, total)
+	}
+	return fmt.Sprintf("%s: %d ok, %d failed", op, total-fails, fails)
 }
 
 // --- Entry point ---

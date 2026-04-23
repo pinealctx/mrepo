@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -136,9 +137,8 @@ func loadDetailForRepo(rootDir, relPath string) tea.Cmd {
 		if err != nil {
 			return detailMsg{err: err}
 		}
-		remotes, _ := git.GetRemoteBranches(ctx, absPath)
 		files, _ := git.GetDiffFiles(ctx, absPath)
-		return detailMsg{branches: branches, remotes: remotes, files: files}
+		return detailMsg{branches: branches, files: files}
 	}
 }
 
@@ -185,13 +185,9 @@ func buildFileTree(files []git.DiffFile) []fileTreeNode {
 	var nodes []fileTreeNode
 	sorted := make([]git.DiffFile, len(files))
 	copy(sorted, files)
-	for i := range len(sorted) {
-		for j := i + 1; j < len(sorted); j++ {
-			if sorted[j].Path < sorted[i].Path {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
+	slices.SortFunc(sorted, func(a, b git.DiffFile) int {
+		return strings.Compare(a.Path, b.Path)
+	})
 	for _, f := range sorted {
 		parts := strings.Split(f.Path, "/")
 		for i := 1; i < len(parts); i++ {

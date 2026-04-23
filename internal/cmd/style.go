@@ -53,16 +53,19 @@ func formatStatus(status string) string {
 }
 
 // displayRepoName returns the human-readable name for a repo.
-// The root repo (".") is shown as the directory basename.
+// The root repo (".") is shown as the directory basename with a <root> tag.
 func displayRepoName(name string) string {
-	if name == rootRepoName {
+	if name == rootRepoName || name == "" {
 		base := filepath.Base(rootDir)
-		return fmt.Sprintf("%s/", base)
+		if base == "." || base == "" {
+			return "<root>"
+		}
+		return fmt.Sprintf("%s/ <root>", base)
 	}
 	return name
 }
 
 // isRootRepo checks if a repo name refers to the root repository.
 func isRootRepo(name string) bool {
-	return name == rootRepoName
+	return name == rootRepoName || name == ""
 }

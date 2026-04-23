@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	updateCheck     bool
+	updateCheck      bool
 	updatePrerelease bool
 )
 
