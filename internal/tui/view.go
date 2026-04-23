@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -61,18 +60,23 @@ func (m model) View() tea.View {
 	branchContentH := available * 30 / 100
 	fileContentH := available - repoContentH - branchContentH
 
-	// fitLines + padLines: fully manual width/height control.
-	// No lipgloss Width/MaxWidth — we enforce exact visual width ourselves.
-	cw := leftW - 2
-
+	// lipgloss Width/Height handles all content sizing and border rendering.
+	// No manual width calculation — lipgloss uses displaywidth internally,
+	// so content sizing and border rendering are always consistent.
 	repoBox := sectionBoxForFocus(m.focus == focusRepos).
-		Render(padLines(fitLines(m.renderReposSection(repoContentH), cw), repoContentH))
+		Width(leftW).
+		Height(repoContentH + 2).
+		Render(m.renderReposSection(repoContentH))
 
 	branchBox := sectionBoxForFocus(m.focus == focusBranches).
-		Render(padLines(fitLines(m.renderBranchSection(branchContentH), cw), branchContentH))
+		Width(leftW).
+		Height(branchContentH + 2).
+		Render(m.renderBranchSection(branchContentH))
 
 	fileBox := sectionBoxForFocus(m.focus == focusFiles).
-		Render(padLines(fitLines(m.renderFilesSection(fileContentH), cw), fileContentH))
+		Width(leftW).
+		Height(fileContentH + 2).
+		Render(m.renderFilesSection(fileContentH))
 
 	leftPanel := lipgloss.JoinVertical(lipgloss.Left, repoBox, branchBox, fileBox)
 
@@ -81,9 +85,10 @@ func (m model) View() tea.View {
 		rightBoxStyle = focusedBox
 	}
 
-	rw := rightW - 2
 	rightBox := rightBoxStyle.
-		Render(padLines(fitLines(m.renderDiffPanel(bodyH-2), rw), bodyH-2))
+		Width(rightW).
+		Height(bodyH).
+		Render(m.renderDiffPanel(bodyH - 2))
 
 	combined := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, " ", rightBox)
 
@@ -97,90 +102,6 @@ func (m model) View() tea.View {
 	return v
 }
 
-// fitLines ensures every line of s is exactly w visual characters:
-// truncates lines that are too wide, pads shorter lines with spaces.
-// ANSI escape codes are preserved and not counted as visual width.
-func fitLines(s string, w int) string {
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		vl := visualLen(line)
-		if vl > w {
-			lines[i] = truncateANSI(line, w)
-		} else if vl < w {
-			lines[i] = line + strings.Repeat(" ", w-vl)
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-// visualLen returns the visual width of s, ignoring ANSI escape sequences.
-func visualLen(s string) int {
-	w := 0
-	for i := 0; i < len(s); {
-		if s[i] == '\x1b' {
-			for i < len(s) && s[i] != 'm' {
-				i++
-			}
-			if i < len(s) {
-				i++
-			}
-			continue
-		}
-		_, size := utf8.DecodeRuneInString(s[i:])
-		w++
-		i += size
-	}
-	return w
-}
-
-// truncateANSI truncates s to maxW visual characters, preserving ANSI codes.
-func truncateANSI(s string, maxW int) string {
-	var b strings.Builder
-	w := 0
-	for i := 0; i < len(s) && w < maxW; {
-		if s[i] == '\x1b' {
-			j := i
-			for j < len(s) && s[j] != 'm' {
-				j++
-			}
-			if j < len(s) {
-				j++
-			}
-			b.WriteString(s[i:j])
-			i = j
-			continue
-		}
-		_, size := utf8.DecodeRuneInString(s[i:])
-		b.WriteString(s[i : i+size])
-		w++
-		i += size
-	}
-	return b.String()
-}
-
-// padLines ensures s has exactly n lines: trims trailing newlines,
-// truncates overflow, pads with empty lines if short.
-func padLines(s string, n int) string {
-	s = strings.TrimRight(s, "\n")
-	if n <= 0 {
-		return ""
-	}
-	if s == "" {
-		if n == 1 {
-			return " "
-		}
-		return " " + strings.Repeat("\n ", n-1)
-	}
-	lines := strings.Split(s, "\n")
-	if len(lines) > n {
-		return strings.Join(lines[:n], "\n")
-	}
-	for len(lines) < n {
-		lines = append(lines, "")
-	}
-	return strings.Join(lines, "\n")
-}
-
 func sectionBoxForFocus(focused bool) lipgloss.Style {
 	if focused {
 		return focusedBox
@@ -192,10 +113,10 @@ func (m model) renderReposSection(maxLines int) string {
 	var b strings.Builder
 	b.WriteString(dimStyle.Render("Repos"))
 	b.WriteString("\n")
-	for i, name := range m.items {
-		if i >= maxLines-1 {
-			break
-		}
+	contentLines := maxLines - 1 // -1 for header
+	start, end := visibleRange(m.repoCursor, len(m.items), contentLines)
+	for i := start; i < end; i++ {
+		name := m.items[i]
 		s := m.details[name]
 		b.WriteString(m.renderRepoRow(name, s, i))
 		b.WriteString("\n")
@@ -206,7 +127,7 @@ func (m model) renderReposSection(maxLines int) string {
 func (m model) renderRepoRow(name string, s *git.RepoStatus, idx int) string {
 	fi := " "
 	if idx == m.repoCursor {
-		fi = focusDotStyle.Render("›")
+		fi = focusDotStyle.Render(">")
 	}
 	disp := m.displayName(name)
 	if s == nil {
@@ -252,11 +173,12 @@ func (m model) renderBranchSection(maxLines int) string {
 		return b.String()
 	}
 	remaining := maxLines - 2 // -2 for header + status line
-	for i := 0; i < remaining && i < len(m.branches); i++ {
+	start, end := visibleRange(m.branchCursor, len(m.branches), remaining)
+	for i := start; i < end; i++ {
 		br := m.branches[i]
 		cursor := "  "
 		if m.focus == focusBranches && i == m.branchCursor {
-			cursor = focusDotStyle.Render(" ›")
+			cursor = focusDotStyle.Render(" >")
 		}
 		marker := "  "
 		name := dimStyle.Render(br.Name)
@@ -291,11 +213,12 @@ func (m model) renderFilesSection(maxLines int) string {
 		b.WriteString(cleanStyle.Render("  clean"))
 		return b.String()
 	}
-	for i := 0; i < maxLines-1 && i < len(m.fileTree); i++ {
+	start, end := visibleRange(m.fileCursor, len(m.fileTree), maxLines-1)
+	for i := start; i < end; i++ {
 		node := m.fileTree[i]
 		cursor := "  "
 		if m.focus == focusFiles && i == m.fileCursor {
-			cursor = focusDotStyle.Render(" ›")
+			cursor = focusDotStyle.Render(" >")
 		}
 		indent := strings.Repeat("  ", node.Indent)
 		if node.IsDir {
@@ -398,6 +321,21 @@ func clamp(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+// visibleRange returns the [start, end) indices for a viewport that keeps
+// cursor visible within maxLines content lines.  Returns (0, total) if
+// everything fits.
+func visibleRange(cursor, total, maxLines int) (int, int) {
+	if maxLines <= 0 || total <= 0 {
+		return 0, 0
+	}
+	if total <= maxLines {
+		return 0, total
+	}
+	// Keep cursor inside the viewport; scroll when it hits the edge.
+	start := clamp(cursor-maxLines/2, 0, total-maxLines)
+	return start, start + maxLines
 }
 
 func formatFileStatus(status string) string {
