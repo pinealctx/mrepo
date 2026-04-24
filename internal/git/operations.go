@@ -68,7 +68,7 @@ func gitCmd(ctx context.Context, repoPath string, args ...string) (string, error
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repoPath
 	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	return strings.TrimRight(string(out), "\r\n"), err
 }
 
 func GetStatus(ctx context.Context, name, repoPath string) *RepoStatus {
@@ -452,7 +452,7 @@ type DiffFile struct {
 
 // GetDiffFiles returns all changed files (staged, unstaged, and untracked).
 func GetDiffFiles(ctx context.Context, repoPath string) ([]DiffFile, error) {
-	out, err := gitCmd(ctx, repoPath, "status", "--porcelain=v1")
+	out, err := gitCmd(ctx, repoPath, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return nil, fmt.Errorf("get diff files: %w", err)
 	}

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pinealctx/mrepo/internal/git"
@@ -53,5 +54,31 @@ func TestModelHandlesFetchMsg(t *testing.T) {
 	}
 	if _, ok := got.details["repo-a"]; !ok {
 		t.Fatal("expected refreshed repo details to be applied")
+	}
+}
+
+func TestDisplayNameRoot(t *testing.T) {
+	m := model{
+		repos: map[string]string{
+			".": ".",
+		},
+	}
+
+	if got := m.displayName("."); got != "<root>" {
+		t.Fatalf("displayName(.) = %q, want %q", got, "<root>")
+	}
+}
+
+func TestRenderDiffPanelDoesNotWrapLongLines(t *testing.T) {
+	m := model{
+		diffContent: &git.FileDiff{
+			Path:    "very/long/path.go",
+			Content: strings.Repeat("x", 200),
+		},
+	}
+
+	rendered := m.renderDiffPanel(5, 20)
+	if lines := strings.Split(rendered, "\n"); len(lines) != 2 {
+		t.Fatalf("rendered %d lines, want 2", len(lines))
 	}
 }

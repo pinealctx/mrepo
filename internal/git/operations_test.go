@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -267,4 +268,67 @@ func TestGetDiffFiles(t *testing.T) {
 	}
 	// Can't assert count since repo may or may not be clean, but should not panic.
 	_ = files
+}
+
+func TestGitCmdPreservesLeadingWhitespace(t *testing.T) {
+	repoPath, _ := filepath.Abs(".")
+	if _, err := os.Stat(filepath.Join(repoPath, ".git")); err != nil {
+		t.Skip("not in a git repo")
+	}
+
+	out, err := gitCmd(context.Background(), repoPath, "status", "--porcelain=v1")
+	if err != nil {
+		t.Fatalf("gitCmd: %v", err)
+	}
+	if out == "" {
+		t.Skip("repo is clean")
+	}
+
+	firstLine := strings.Split(out, "\n")[0]
+	if len(firstLine) > 0 && firstLine[0] != ' ' && firstLine[0] != '?' && firstLine[0] != 'A' &&
+		firstLine[0] != 'M' && firstLine[0] != 'D' && firstLine[0] != 'R' && firstLine[0] != 'U' {
+		t.Fatalf("unexpected first status character %q", firstLine[0])
+	}
+}
+
+func TestGetDiffFilesKeepsFirstCharacterOfFirstPath(t *testing.T) {
+	line := " M cmd/server/services.go"
+	x := line[0]
+	y := line[1]
+	path := line[3:]
+
+	if got := fileStatusFromXY(x, y); got != "M" {
+		t.Fatalf("fileStatusFromXY() = %q, want %q", got, "M")
+	}
+	if path != "cmd/server/services.go" {
+		t.Fatalf("path = %q, want %q", path, "cmd/server/services.go")
+	}
+}
+
+func TestGetDiffFilesParsesExpandedUntrackedFiles(t *testing.T) {
+	lines := []string{
+		"?? internal/infra/seqalloc/a.go",
+		"?? internal/infra/seqalloc/b.go",
+	}
+
+	var files []DiffFile
+	for _, line := range lines {
+		x := line[0]
+		y := line[1]
+		path := line[3:]
+		files = append(files, DiffFile{
+			Status: fileStatusFromXY(x, y),
+			Path:   path,
+		})
+	}
+
+	if len(files) != 2 {
+		t.Fatalf("len(files) = %d, want 2", len(files))
+	}
+	if files[0].Status != "?" || files[0].Path != "internal/infra/seqalloc/a.go" {
+		t.Fatalf("first file = %+v", files[0])
+	}
+	if files[1].Status != "?" || files[1].Path != "internal/infra/seqalloc/b.go" {
+		t.Fatalf("second file = %+v", files[1])
+	}
 }

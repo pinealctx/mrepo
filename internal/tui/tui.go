@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -55,11 +54,10 @@ type (
 // --- Model ---
 
 type model struct {
-	rootDir  string
-	rootName string
-	repos    map[string]string
-	config   *config.Config
-	items    []string
+	rootDir string
+	repos   map[string]string
+	config  *config.Config
+	items   []string
 
 	details  map[string]*git.RepoStatus
 	selected string
@@ -119,29 +117,20 @@ func NewModel(rootDir string, cfg *config.Config, filteredRepos map[string]*conf
 		}
 	}
 
-	absRoot, err := filepath.Abs(rootDir)
-	rootName := filepath.Base(absRoot) + "/"
-	if err != nil {
-		rootName = filepath.Base(rootDir) + "/"
-	}
 	return model{
-		rootDir:  rootDir,
-		rootName: rootName,
-		repos:    repos,
-		config:   cfg,
-		items:    items,
-		details:  make(map[string]*git.RepoStatus),
-		focus:    focusRepos,
-		version:  ver,
+		rootDir: rootDir,
+		repos:   repos,
+		config:  cfg,
+		items:   items,
+		details: make(map[string]*git.RepoStatus),
+		focus:   focusRepos,
+		version: ver,
 	}
 }
 
 func (m *model) displayName(name string) string {
 	if name == "." || name == "" || m.repos[name] == "." {
-		if m.rootName == "./" || m.rootName == "" {
-			return "<root>"
-		}
-		return m.rootName + " <root>"
+		return "<root>"
 	}
 	return name
 }
@@ -360,9 +349,13 @@ func (m model) maxDiffScroll() int {
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
+	return max(0, len(lines)-m.diffViewportLines())
+}
+
+func (m model) diffViewportLines() int {
 	bodyH := m.height - 1
-	diffLines := bodyH - 2 - 1 // -2 for box border, -1 for header
-	return max(0, len(lines)-diffLines)
+	innerH := bodyH - 2 // -2 for box border
+	return max(0, innerH-1)
 }
 
 func (m model) updateConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {

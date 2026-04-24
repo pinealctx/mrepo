@@ -93,7 +93,8 @@ func (m model) View() tea.View {
 	rightBox := rightBoxStyle.
 		Width(rightW).
 		Height(bodyH).
-		Render(m.renderDiffPanel(bodyH - 2))
+		MaxHeight(bodyH).
+		Render(m.renderDiffPanel(bodyH-2, rightW-2))
 
 	combined := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, " ", rightBox)
 
@@ -245,12 +246,12 @@ func (m model) renderFilesSection(maxLines, maxW int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m model) renderDiffPanel(height int) string {
+func (m model) renderDiffPanel(height, maxW int) string {
 	if m.diffContent == nil {
-		return dimStyle.Render("  Select a file to view diff")
+		return fitRenderedLines([]string{dimStyle.Render("  Select a file to view diff")}, height, maxW)
 	}
 	if m.diffContent.Error != nil {
-		return errorStyle.Render("  " + m.diffContent.Error.Error())
+		return fitRenderedLines([]string{errorStyle.Render("  " + m.diffContent.Error.Error())}, height, maxW)
 	}
 	var out []string
 	out = append(out, "  "+accentStyle.Render(m.diffContent.Path))
@@ -259,28 +260,42 @@ func (m model) renderDiffPanel(height int) string {
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
-	diffLines := height - 1 // -1 for header line
+	diffLines := max(0, height-1) // -1 for header line
 	if diffLines < 1 {
-		return strings.Join(out, "\n")
+		return fitRenderedLines(out, height, maxW)
 	}
 	maxOff := max(0, len(lines)-diffLines)
 	scrollOff := min(m.diffScrollOff, maxOff)
 	end := min(scrollOff+diffLines, len(lines))
 	for _, line := range lines[scrollOff:end] {
+		rendered := "  " + line
 		switch {
 		case strings.HasPrefix(line, "diff --git") || strings.HasPrefix(line, "index "):
-			out = append(out, "  "+dimStyle.Render(line))
+			rendered = "  " + dimStyle.Render(line)
 		case strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++"):
-			out = append(out, "  "+dimStyle.Render(line))
+			rendered = "  " + dimStyle.Render(line)
 		case strings.HasPrefix(line, "@@"):
-			out = append(out, "  "+accentStyle.Render(line))
+			rendered = "  " + accentStyle.Render(line)
 		case strings.HasPrefix(line, "+"):
-			out = append(out, "  "+cleanStyle.Render(line))
+			rendered = "  " + cleanStyle.Render(line)
 		case strings.HasPrefix(line, "-"):
-			out = append(out, "  "+errorStyle.Render(line))
-		default:
-			out = append(out, "  "+line)
+			rendered = "  " + errorStyle.Render(line)
 		}
+		out = append(out, rendered)
+	}
+	return fitRenderedLines(out, height, maxW)
+}
+
+func fitRenderedLines(lines []string, maxLines, maxW int) string {
+	if maxLines <= 0 {
+		return ""
+	}
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, truncLine(line, maxW))
 	}
 	return strings.Join(out, "\n")
 }
