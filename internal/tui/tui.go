@@ -75,6 +75,7 @@ type model struct {
 	branchCursor  int
 	fileCursor    int
 	diffScrollOff int
+	diffXOffset   int
 
 	// Loading
 	loading       bool
@@ -247,23 +248,18 @@ func (m model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.statusText = "syncing..."
 			return m, syncAll(m.rootDir, m.config, m.repos)
 		}
+	case "left":
+		if m.focus != focusDiff {
+			return m.moveFocusLeft(), nil
+		}
+	case "right":
+		if m.focus != focusDiff {
+			return m.moveFocusRight(), nil
+		}
 	}
 
 	if key == "tab" {
-		switch m.focus {
-		case focusRepos:
-			m.focus = focusBranches
-		case focusBranches:
-			m.focus = focusFiles
-		case focusFiles:
-			if m.diffContent != nil {
-				m.focus = focusDiff
-			} else {
-				m.focus = focusRepos
-			}
-		case focusDiff:
-			m.focus = focusRepos
-		}
+		m.focus = m.nextFocus()
 		return m, nil
 	}
 
@@ -297,6 +293,10 @@ func moveCursor(cursor, count int, key string) (int, bool) {
 }
 
 func (m model) updateReposNav(key string) (tea.Model, tea.Cmd) {
+	if key == "enter" && len(m.items) > 0 {
+		m.focus = focusBranches
+		return m, nil
+	}
 	pos, moved := moveCursor(m.repoCursor, len(m.items), key)
 	if moved {
 		m.repoCursor = pos
@@ -317,6 +317,7 @@ func (m model) updateBranchesNav(key string) (tea.Model, tea.Cmd) {
 func (m model) updateFilesNav(key string) (tea.Model, tea.Cmd) {
 	m.fileCursor, _ = moveCursor(m.fileCursor, len(m.fileTree), key)
 	if key == "enter" && m.fileCursor < len(m.fileTree) && !m.fileTree[m.fileCursor].IsDir {
+		m.focus = focusDiff
 		return m, loadFileDiffForRepo(m.rootDir, m.repos[m.selected], m.fileTree[m.fileCursor].Path, m.fileTree[m.fileCursor].Status == "?")
 	}
 	return m, nil
@@ -325,6 +326,12 @@ func (m model) updateFilesNav(key string) (tea.Model, tea.Cmd) {
 func (m model) updateDiffNav(key string) (tea.Model, tea.Cmd) {
 	maxOff := m.maxDiffScroll()
 	switch key {
+	case "esc":
+		m.focus = focusFiles
+	case "left":
+		m.diffXOffset = max(0, m.diffXOffset-4)
+	case "right":
+		m.diffXOffset += 4
 	case "up", "k":
 		if m.diffScrollOff > 0 {
 			m.diffScrollOff--
@@ -382,6 +389,7 @@ func (m model) switchRepo() (tea.Model, tea.Cmd) {
 	m.branchCursor = 0
 	m.fileCursor = 0
 	m.diffScrollOff = 0
+	m.diffXOffset = 0
 	m.loadingDetail = true
 	return m, loadDetailForRepo(m.rootDir, m.repos[m.selected])
 }
@@ -403,6 +411,48 @@ func summarizeResults(op string, results map[string]string) string {
 		return fmt.Sprintf("%s: %d ok", op, total)
 	}
 	return fmt.Sprintf("%s: %d ok, %d failed", op, total-fails, fails)
+}
+
+func (m model) nextFocus() focus {
+	switch m.focus {
+	case focusRepos:
+		return focusBranches
+	case focusBranches:
+		return focusFiles
+	case focusFiles:
+		if m.diffContent != nil {
+			return focusDiff
+		}
+		return focusRepos
+	default:
+		return focusRepos
+	}
+}
+
+func (m model) moveFocusLeft() tea.Model {
+	switch m.focus {
+	case focusBranches:
+		m.focus = focusRepos
+	case focusFiles:
+		m.focus = focusBranches
+	case focusDiff:
+		m.focus = focusFiles
+	}
+	return m
+}
+
+func (m model) moveFocusRight() tea.Model {
+	switch m.focus {
+	case focusRepos:
+		m.focus = focusBranches
+	case focusBranches:
+		m.focus = focusFiles
+	case focusFiles:
+		if m.diffContent != nil {
+			m.focus = focusDiff
+		}
+	}
+	return m
 }
 
 // --- Entry point ---

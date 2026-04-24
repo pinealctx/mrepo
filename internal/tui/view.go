@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/pinealctx/mrepo/internal/git"
 )
@@ -116,13 +117,14 @@ func sectionBoxForFocus(focused bool) lipgloss.Style {
 }
 
 // truncLine truncates an ANSI-styled string to fit within maxW display columns.
-var truncStyle lipgloss.Style
-
 func truncLine(s string, maxW int) string {
+	if maxW <= 0 {
+		return ""
+	}
 	if lipgloss.Width(s) <= maxW {
 		return s
 	}
-	return truncStyle.MaxWidth(maxW).Render(s)
+	return ansi.Truncate(s, maxW, "")
 }
 
 func (m model) renderReposSection(maxLines, maxW int) string {
@@ -268,6 +270,7 @@ func (m model) renderDiffPanel(height, maxW int) string {
 	scrollOff := min(m.diffScrollOff, maxOff)
 	end := min(scrollOff+diffLines, len(lines))
 	for _, line := range lines[scrollOff:end] {
+		line = expandTabs(line)
 		rendered := "  " + line
 		switch {
 		case strings.HasPrefix(line, "diff --git") || strings.HasPrefix(line, "index "):
@@ -281,9 +284,16 @@ func (m model) renderDiffPanel(height, maxW int) string {
 		case strings.HasPrefix(line, "-"):
 			rendered = "  " + errorStyle.Render(line)
 		}
+		if maxW > 0 {
+			rendered = ansi.Cut(rendered, m.diffXOffset, m.diffXOffset+maxW)
+		}
 		out = append(out, rendered)
 	}
 	return fitRenderedLines(out, height, maxW)
+}
+
+func expandTabs(s string) string {
+	return strings.ReplaceAll(s, "\t", "    ")
 }
 
 func fitRenderedLines(lines []string, maxLines, maxW int) string {
@@ -305,18 +315,18 @@ func (m model) renderHelp() string {
 		return helpStyle.Render(fmt.Sprintf(" Checkout %s? [y/n]", m.checkoutBranch))
 	}
 
-	brand := brandStyle.Render("mrepo") + dimStyle.Render(fmt.Sprintf(" %s", m.version))
+	brand := brandStyle.Render("mrepo") + dimStyle.Render(fmt.Sprintf(" %s", compactVersion(m.version)))
 
 	var keys string
 	switch m.focus {
 	case focusRepos:
-		keys = "[j/k] move [p]ull [f]etch [c]lone [S]ync [s]tatus"
+		keys = "[↑/↓] move [enter/→] next [p]ull [f]etch [c]lone [S]ync [s]tatus"
 	case focusBranches:
-		keys = "[j/k] move [enter] checkout"
+		keys = "[↑/↓] move [←/→] panel [enter] checkout"
 	case focusFiles:
-		keys = "[j/k] move [enter] diff"
+		keys = "[↑/↓] move [←/→] panel [enter] diff"
 	case focusDiff:
-		keys = "[j/k/pgup/pgdn] scroll"
+		keys = "[↑/↓/pgup/pgdn] scroll [←/→] horiz [esc] files"
 	}
 
 	help := helpStyle.Render(fmt.Sprintf(" %s  [tab] switch %s [q]", brand, keys))
@@ -385,4 +395,42 @@ func formatFileStatus(status string) string {
 	default:
 		return dimStyle.Render(status + " ")
 	}
+}
+
+func compactVersion(v string) string {
+	base, meta, hasMeta := strings.Cut(v, "+")
+	parts := strings.Split(base, "-")
+	if len(parts) >= 3 {
+		rev := parts[len(parts)-1]
+		if isHexString(rev) {
+			base = parts[0] + "-" + rev[:min(7, len(rev))]
+		}
+	}
+	if hasMeta {
+		base += "+" + meta
+	}
+	if len(base) <= 24 {
+		return base
+	}
+	if hasMeta && len(meta)+4 < 24 {
+		head := max(1, 24-(len(meta)+4))
+		return base[:head] + "..." + "+" + meta
+	}
+	return base[:21] + "..."
+}
+
+func isHexString(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
