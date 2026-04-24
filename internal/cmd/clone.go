@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sort"
 
+	"github.com/pinealctx/mrepo/internal/config"
 	"github.com/pinealctx/mrepo/internal/git"
 
 	"github.com/spf13/cobra"
@@ -35,6 +36,9 @@ var cloneCmd = &cobra.Command{
 		// Collect repos that need cloning.
 		specs := make(map[string]git.CloneSpec)
 		for name, repo := range filterRepos(cfg) {
+			if err := config.ValidateRepo(rootDir, repo.Path, repo.Remote); err != nil {
+				return fmt.Errorf("repo %q %w", name, err)
+			}
 			if repo.Remote == "" {
 				continue
 			}

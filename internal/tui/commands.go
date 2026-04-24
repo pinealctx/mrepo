@@ -52,13 +52,23 @@ func fetchAllRepos(rootDir string, repos map[string]string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		existing := filterExisting(rootDir, repos)
-		_ = git.FetchAll(ctx, rootDir, existing, runtime.NumCPU())
+		fetchResults := git.FetchAll(ctx, rootDir, existing, runtime.NumCPU())
 		statuses := git.GetStatuses(ctx, rootDir, repos, runtime.NumCPU())
 		details := make(map[string]*git.RepoStatus, len(statuses))
 		for _, s := range statuses {
 			details[s.Name] = s
 		}
-		return statusMsg{details: details}
+		out := make(map[string]string, len(fetchResults))
+		for _, r := range fetchResults {
+			if r.Error != nil {
+				out[r.Name] = fmt.Sprintf("FAIL: %s", r.Error)
+			} else if r.Output == "" {
+				out[r.Name] = "up to date"
+			} else {
+				out[r.Name] = r.Output
+			}
+		}
+		return fetchMsg{results: out, details: details}
 	}
 }
 

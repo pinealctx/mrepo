@@ -91,6 +91,8 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	rootDir := filepath.Dir(path)
+
 	// Normalize: empty-name repo with path "." is the root repo.
 	if repo, ok := cfg.Repos[""]; ok && repo.Path == "." {
 		delete(cfg.Repos, "")
@@ -99,14 +101,8 @@ func Load(path string) (*Config, error) {
 
 	// Validate repo entries.
 	for name, repo := range cfg.Repos {
-		if repo.Path == "" {
-			return nil, fmt.Errorf("repo %q has empty path", name)
-		}
-		if strings.HasPrefix(repo.Path, "-") {
-			return nil, fmt.Errorf("repo %q has invalid path %q: must not start with '-'", name, repo.Path)
-		}
-		if repo.Remote != "" && !strings.Contains(repo.Remote, "://") && !strings.Contains(repo.Remote, "@") {
-			return nil, fmt.Errorf("repo %q has invalid remote %q: must be a URL or SSH address", name, repo.Remote)
+		if err := ValidateRepo(rootDir, repo.Path, repo.Remote); err != nil {
+			return nil, fmt.Errorf("repo %q: %w", name, err)
 		}
 	}
 
@@ -266,6 +262,31 @@ func (c *Config) RepoNamesForGroup(groupName string) ([]string, error) {
 
 func RepoNameFromPath(p string) string {
 	return strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
+}
+
+func ValidateRepo(rootDir, repoPath, remote string) error {
+	if repoPath == "" {
+		return fmt.Errorf("has empty path")
+	}
+	if strings.HasPrefix(repoPath, "-") {
+		return fmt.Errorf("has invalid path %q: must not start with '-'", repoPath)
+	}
+
+	absPath, err := filepath.Abs(filepath.Join(rootDir, repoPath))
+	if err != nil {
+		return fmt.Errorf("has invalid path %q: %w", repoPath, err)
+	}
+	rootAbs, err := filepath.Abs(rootDir)
+	if err != nil {
+		return fmt.Errorf("has invalid root %q: %w", rootDir, err)
+	}
+	if !strings.HasPrefix(absPath, rootAbs+string(filepath.Separator)) && absPath != rootAbs {
+		return fmt.Errorf("has path %q that escapes root directory", repoPath)
+	}
+	if remote != "" && !strings.Contains(remote, "://") && !strings.Contains(remote, "@") {
+		return fmt.Errorf("has invalid remote %q: must be a URL or SSH address", remote)
+	}
+	return nil
 }
 
 func EnsureConfig(rootDir, format string) (string, error) {

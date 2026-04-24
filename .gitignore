@@ -12,6 +12,8 @@ mrepo.exe
 # Output
 /dist/
 /bin/
+.gocache/
+coverage.out
 
 # IDE
 .idea/

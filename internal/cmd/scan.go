@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -79,6 +80,8 @@ var scanCmd = &cobra.Command{
 }
 
 func addScannedRepos(ctx context.Context, cfgPath string, cfg *config.Config, repos []string) error {
+	var errs []error
+
 	for _, path := range repos {
 		name := config.RepoNameFromPath(path)
 		absPath := filepath.Join(rootDir, path)
@@ -86,7 +89,17 @@ func addScannedRepos(ctx context.Context, cfgPath string, cfg *config.Config, re
 		// Auto-detect remote URL and current branch.
 		info := git.GetRepoInfo(ctx, absPath)
 
-		_ = cfg.AddRepo(name, path, info.Remote, info.Branch, "")
+		if err := config.ValidateRepo(rootDir, path, info.Remote); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", path, err))
+			fmt.Printf("  %s %s\n", warnIcon(), dimStyle.Render("skipped: "+path+" ("+err.Error()+")"))
+			continue
+		}
+
+		if err := cfg.AddRepo(name, path, info.Remote, info.Branch, ""); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", path, err))
+			fmt.Printf("  %s %s\n", warnIcon(), dimStyle.Render("skipped: "+path+" ("+err.Error()+")"))
+			continue
+		}
 
 		// Add to .gitignore so root repo doesn't track the sub-repo.
 		if err := ensureGitignore(rootDir, path); err != nil {
@@ -107,7 +120,13 @@ func addScannedRepos(ctx context.Context, cfgPath string, cfg *config.Config, re
 	if cfgPath == "" {
 		cfgPath = config.ConfigPath(rootDir, config.FormatTOML)
 	}
-	return cfg.Save(cfgPath)
+	if err := cfg.Save(cfgPath); err != nil {
+		errs = append(errs, err)
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return errors.Join(errs...)
 }
 
 func init() {

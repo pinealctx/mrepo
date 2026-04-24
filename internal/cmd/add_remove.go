@@ -24,6 +24,10 @@ var addCmd = &cobra.Command{
 		desc, _ := cmd.Flags().GetString("desc")
 		force, _ := cmd.Flags().GetBool("force")
 
+		if err := config.ValidateRepo(rootDir, repoPath, ""); err != nil {
+			return err
+		}
+
 		cfgPath, err := config.EnsureConfig(rootDir, format)
 		if err != nil {
 			return err
@@ -108,6 +112,9 @@ var removeCmd = &cobra.Command{
 		repo, err := cfg.RemoveRepo(name)
 		if err != nil {
 			return err
+		}
+		if err := config.ValidateRepo(rootDir, repo.Path, repo.Remote); err != nil {
+			return fmt.Errorf("repo %q %w", name, err)
 		}
 
 		if deleteDir && force {

@@ -197,6 +197,44 @@ func TestFindConfigFile(t *testing.T) {
 	}
 }
 
+func TestValidateRepo(t *testing.T) {
+	root := t.TempDir()
+
+	tests := []struct {
+		name     string
+		repoPath string
+		remote   string
+		wantErr  bool
+	}{
+		{name: "valid relative path", repoPath: "services/backend", remote: "https://github.com/org/backend.git"},
+		{name: "valid root path", repoPath: ".", remote: ""},
+		{name: "path traversal", repoPath: "../escape", remote: "", wantErr: true},
+		{name: "flag injection", repoPath: "-bad", remote: "", wantErr: true},
+		{name: "invalid remote", repoPath: "services/backend", remote: "not-a-url", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		err := ValidateRepo(root, tt.repoPath, tt.remote)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("%s: ValidateRepo(%q, %q) err = %v, wantErr %v", tt.name, tt.repoPath, tt.remote, err, tt.wantErr)
+		}
+	}
+}
+
+func TestLoadRejectsEscapingPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".repos.toml")
+	data := []byte("version = 1\n[repos.bad]\npath = \"../escape\"\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected Load to reject path traversal")
+	}
+}
+
 func TestSortedRepoNames(t *testing.T) {
 	cfg := New()
 	if err := cfg.AddRepo("charlie", "c", "", "", ""); err != nil {

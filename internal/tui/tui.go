@@ -41,7 +41,11 @@ type (
 		files    []git.DiffFile
 		err      error
 	}
-	pullMsg           struct{ results map[string]string }
+	pullMsg  struct{ results map[string]string }
+	fetchMsg struct {
+		results map[string]string
+		details map[string]*git.RepoStatus
+	}
 	cloneMsg          struct{ results map[string]string }
 	syncMsg           struct{ results map[string]string }
 	fileDiffMsg       struct{ diff *git.FileDiff }
@@ -192,6 +196,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusText = summarizeResults("pull", msg.results)
 		return m, refreshStatus(m.rootDir, m.repos)
 
+	case fetchMsg:
+		m.operating = false
+		m.statusText = summarizeResults("fetch", msg.results)
+		m.details = msg.details
+		m.loading = false
+		return m, nil
+
 	case cloneMsg:
 		m.operating = false
 		m.statusText = summarizeResults("clone", msg.results)
@@ -228,8 +239,13 @@ func (m model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, pullAll(m.rootDir, m.repos)
 		}
 	case "f":
-		m.loading = true
-		return m, fetchAllRepos(m.rootDir, m.repos)
+		if !m.operating {
+			m.operating = true
+			m.loading = true
+			m.statusText = "fetching..."
+			return m, fetchAllRepos(m.rootDir, m.repos)
+		}
+		return m, nil
 	case "c":
 		if !m.operating {
 			m.operating = true
