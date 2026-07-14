@@ -63,7 +63,7 @@ repos = ["backend", "frontend"]
 2. `filterRepos(cfg)` applies `--group` filtering if set, returns `map[string]*config.Repo`
 3. `partitionRepos()` splits into existing/missing sets (used by pull, fetch)
 4. Builds a `map[string]string` of `{repoName: relativePath}` for git operations
-5. Calls `git.GetStatuses()` / `git.PullAll()` / `git.CloneAll()` which fan out via `parallelDo` generic helper using `errgroup` with `runtime.NumCPU()` workers and `atomic.Int64` index
+5. Calls `git.GetStatuses()` / `git.PullAllWithOptions()` / `git.CloneAll()` which fan out via `parallelDo`; network operations default to at most 8 workers and support per-repo timeouts/progress callbacks
 6. Each worker shells out to `git` via `exec.CommandContext`
 7. Results sorted alphabetically and rendered via `newResultTable()` / `newHeaderTable()` or `printJSON()`
 
@@ -105,7 +105,8 @@ repos = ["backend", "frontend"]
 - `printJSON()` / `newResultTable()` / `newHeaderTable()` in `cmd/root.go` eliminate output boilerplate
 - `partitionRepos()` in `cmd/root.go` splits repos into existing/missing (used by pull, fetch)
 - `OperationResult` in `git/operations.go` is the unified result type for pull and fetch operations
-- Timeout constants (`statusTimeout`, `pullTimeout`, etc.) defined in `cmd/root.go`
+- Timeout constants (`statusTimeout`, `pullTimeout`, etc.) define defaults; pull/fetch apply their timeout per repository
+- Pull uses retrying `git fetch --no-write-fetch-head` followed by `git merge --ff-only @{upstream}` to avoid `FETCH_HEAD` races
 - `truncate()` in `cmd/pull.go` counts runes (not bytes) for safe UTF-8 truncation
 - `validateCloneTarget()` prevents path traversal and flag injection in clone operations
 - CLI table output uses `lipgloss/v2/table` (static renderer with `StyleFunc`); TUI uses manual rendering with `lipgloss.JoinHorizontal` for master-detail split layout

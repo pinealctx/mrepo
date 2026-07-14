@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 
 	"github.com/pinealctx/mrepo/internal/config"
@@ -71,35 +70,48 @@ var cloneCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), cloneTimeout)
 		defer cancel()
 
-		results := git.CloneAll(ctx, rootDir, specs, runtime.NumCPU())
+		results := git.CloneAll(ctx, rootDir, specs, git.DefaultParallelism())
 		sort.Slice(results, func(i, j int) bool {
 			return results[i].Name < results[j].Name
 		})
 
 		if jsonOutput {
 			out := make([]jsonClone, len(results))
+			failed := 0
 			for i, r := range results {
 				jc := jsonClone{Name: r.Name, Path: r.Path, Output: r.Output}
 				if r.Error != nil {
 					jc.Error = r.Error.Error()
+					failed++
 				}
 				out[i] = jc
 			}
-			return printJSON(out)
+			if err := printJSON(out); err != nil {
+				return err
+			}
+			if failed > 0 {
+				return fmt.Errorf("clone: %d repositories failed", failed)
+			}
+			return nil
 		}
 
-		t := newResultTable()
+		rows := make([]operationRow, 0, len(results))
+		failed := 0
 
 		for _, r := range results {
 			dn := displayRepoName(r.Name)
 			if r.Error != nil {
-				t.Row(errorIcon(), dn, errorStyle.Render(truncate(r.Error.Error(), 80)))
+				failed++
+				rows = append(rows, operationRow{Icon: errorIcon(), Name: dn, Result: operationErrorSummary(r.Error), ResultStyle: errorStyle})
 			} else {
-				t.Row(cloneIcon(), dn, dimStyle.Render(truncate(r.Output, 80)))
+				rows = append(rows, operationRow{Icon: cloneIcon(), Name: dn, Result: operationOutputSummary(r.Output, "cloned"), ResultStyle: dimStyle})
 			}
 		}
 
-		fmt.Println(t.Render())
+		fmt.Println(renderOperationTable(rows))
+		if failed > 0 {
+			return fmt.Errorf("clone: %d repositories failed", failed)
+		}
 		return nil
 	},
 }

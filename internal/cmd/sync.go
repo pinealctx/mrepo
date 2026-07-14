@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
+	"time"
 
 	"github.com/pinealctx/mrepo/internal/git"
 
@@ -25,12 +25,15 @@ var syncCmd = &cobra.Command{
 	Short: "Clone missing repos and pull existing ones",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		depth, _ := cmd.Flags().GetInt("depth")
+		parallel, _ := cmd.Flags().GetInt("parallel")
+		timeout, _ := cmd.Flags().GetDuration("timeout")
 		_, cfg, err := loadConfig(rootDir)
 		if err != nil {
 			return err
 		}
 
 		filtered := filterRepos(cfg)
+		started := time.Now()
 
 		// Partition into missing (clone) and existing (pull).
 		toClone := make(map[string]git.CloneSpec)
@@ -52,14 +55,14 @@ var syncCmd = &cobra.Command{
 			}
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
+		ctx, cancel := context.WithTimeout(cmd.Context(), syncTimeout)
 		defer cancel()
 
 		var allResults []syncRepoResult
 
 		// Clone missing.
 		if len(toClone) > 0 {
-			cloneResults := git.CloneAll(ctx, rootDir, toClone, runtime.NumCPU())
+			cloneResults := git.CloneAll(ctx, rootDir, toClone, parallel)
 			for _, r := range cloneResults {
 				sr := syncRepoResult{
 					Name:   r.Name,
@@ -75,7 +78,13 @@ var syncCmd = &cobra.Command{
 
 		// Pull existing.
 		if len(toPull) > 0 {
-			pullResults := git.PullAll(ctx, rootDir, toPull, runtime.NumCPU())
+			progress := newOperationProgress("Pulling", !jsonOutput)
+			pullResults := git.PullAllWithOptions(ctx, rootDir, toPull, git.BatchOptions{
+				Parallel:   parallel,
+				Timeout:    timeout,
+				OnProgress: progress.Update,
+			})
+			progress.Done()
 			for _, r := range pullResults {
 				sr := syncRepoResult{
 					Name:   r.Name,
@@ -104,28 +113,47 @@ var syncCmd = &cobra.Command{
 		sort.Slice(allResults, func(i, j int) bool {
 			return allResults[i].Name < allResults[j].Name
 		})
-
-		if jsonOutput {
-			return printJSON(allResults)
-		}
-
-		t := newResultTable()
-
+		failed := 0
+		skipped := 0
 		for _, r := range allResults {
-			dn := displayRepoName(r.Name)
-			action := dimStyle.Render(fmt.Sprintf("[%s]", r.Action))
-			if r.Error != "" {
-				t.Row(errorIcon(), dn, action, errorStyle.Render(truncate(r.Error, 60)))
-			} else {
-				output := truncate(r.Output, 60)
-				if output == "" {
-					output = "ok"
-				}
-				t.Row(successIcon(), dn, action, dimStyle.Render(output))
+			if r.Action == "skipped" {
+				skipped++
+			} else if r.Error != "" {
+				failed++
 			}
 		}
 
-		fmt.Println(t.Render())
+		if jsonOutput {
+			if err := printJSON(allResults); err != nil {
+				return err
+			}
+			if failed > 0 {
+				return fmt.Errorf("sync: %d repositories failed", failed)
+			}
+			return nil
+		}
+
+		rows := make([]operationRow, 0, len(allResults))
+		succeeded := 0
+
+		for _, r := range allResults {
+			dn := displayRepoName(r.Name)
+			action := r.Action
+			if action == "skipped" {
+				rows = append(rows, operationRow{Icon: warnIcon(), Name: dn, Action: action, Result: operationErrorSummary(fmt.Errorf("%s", r.Error)), ResultStyle: warnStyle})
+			} else if r.Error != "" {
+				rows = append(rows, operationRow{Icon: errorIcon(), Name: dn, Action: action, Result: operationErrorSummary(fmt.Errorf("%s", r.Error)), ResultStyle: errorStyle})
+			} else {
+				succeeded++
+				rows = append(rows, operationRow{Icon: successIcon(), Name: dn, Action: action, Result: operationOutputSummary(r.Output, "ok"), ResultStyle: dimStyle})
+			}
+		}
+
+		fmt.Println(renderOperationTable(rows))
+		printOperationSummary("Sync complete", succeeded, failed, skipped, time.Since(started))
+		if failed > 0 {
+			return fmt.Errorf("sync: %d repositories failed", failed)
+		}
 		return nil
 	},
 }
@@ -133,5 +161,7 @@ var syncCmd = &cobra.Command{
 func init() {
 	syncCmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
 	syncCmd.Flags().Int("depth", 0, "shallow clone depth (0 = full)")
+	syncCmd.Flags().Int("parallel", defaultNetworkParallel(), "maximum concurrent network operations")
+	syncCmd.Flags().Duration("timeout", pullTimeout, "timeout for each pull operation")
 	rootCmd.AddCommand(syncCmd)
 }

@@ -31,12 +31,12 @@ func TestAddScannedReposRejectsDuplicateRepoName(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(rootDir, "libs", "api"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("git", "init")
+	cmd := exec.CommandContext(t.Context(), "git", "init")
 	cmd.Dir = filepath.Join(rootDir, "libs", "api")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init failed: %v: %s", err, out)
 	}
-	cmd = exec.Command("git", "remote", "add", "origin", "https://github.com/org/libs-api.git")
+	cmd = exec.CommandContext(t.Context(), "git", "remote", "add", "origin", "https://github.com/org/libs-api.git")
 	cmd.Dir = filepath.Join(rootDir, "libs", "api")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git remote add failed: %v: %s", err, out)

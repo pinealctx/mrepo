@@ -8,10 +8,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -67,8 +69,63 @@ func (s *RepoStatus) StatusString() string {
 func gitCmd(ctx context.Context, repoPath string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repoPath
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
+	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.CombinedOutput()
 	return strings.TrimRight(string(out), "\r\n"), err
+}
+
+func gitCmdWithRetry(ctx context.Context, repoPath string, retries int, args ...string) (string, error) {
+	var out string
+	var err error
+	for attempt := 0; attempt <= retries; attempt++ {
+		out, err = gitCmd(ctx, repoPath, args...)
+		if err == nil || ctx.Err() != nil || !isTransientGitError(out) || attempt == retries {
+			return out, err
+		}
+
+		delay := 250 * time.Millisecond * time.Duration(1<<attempt)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return out, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return out, err
+}
+
+func isTransientGitError(output string) bool {
+	s := strings.ToLower(output)
+	for _, fragment := range []string{
+		"ssl_error_syscall",
+		"connection reset",
+		"connection was reset",
+		"connection timed out",
+		"operation timed out",
+		"tls handshake timeout",
+		"could not resolve host",
+		"cannot lock ref",
+		"unable to update local ref",
+		"remote end hung up unexpectedly",
+		"the remote end hung up unexpectedly",
+		"http 429",
+		"http 500",
+		"http 502",
+		"http 503",
+		"http 504",
+	} {
+		if strings.Contains(s, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func GetStatus(ctx context.Context, name, repoPath string) *RepoStatus {
@@ -169,20 +226,71 @@ type OperationResult struct {
 	Error  error
 }
 
+// BatchOptions controls bounded parallel network operations across repositories.
+type BatchOptions struct {
+	Parallel   int
+	Timeout    time.Duration
+	OnProgress func(completed, total int, result *OperationResult)
+}
+
+// DefaultParallelism keeps network fan-out bounded even on high-core machines.
+func DefaultParallelism() int {
+	return min(runtime.NumCPU(), 8)
+}
+
+const networkRetries = 2
+
+func operationError(ctx context.Context, operation, output string, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("%s: %w", operation, ctxErr)
+	}
+	if output == "" {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	return fmt.Errorf("%s: %s", operation, output)
+}
+
 func Pull(ctx context.Context, name, repoPath string) *OperationResult {
-	out, err := gitCmd(ctx, repoPath, "pull", "--ff-only")
-	r := &OperationResult{Name: name, Path: repoPath, Output: out}
+	r := &OperationResult{Name: name, Path: repoPath}
+
+	branch, err := gitCmd(ctx, repoPath, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
-		r.Error = fmt.Errorf("pull: %s", out)
+		r.Error = operationError(ctx, "get current branch", branch, err)
+		return r
+	}
+	upstream, err := gitCmd(ctx, repoPath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	if err != nil {
+		r.Error = operationError(ctx, "get upstream", upstream, err)
+		return r
+	}
+	remote, err := gitCmd(ctx, repoPath, "config", "--get", "branch."+branch+".remote")
+	if err != nil {
+		r.Error = operationError(ctx, "get upstream remote", remote, err)
+		return r
+	}
+
+	if remote != "." {
+		out, fetchErr := gitCmdWithRetry(ctx, repoPath, networkRetries, "fetch", "--no-write-fetch-head", remote)
+		if fetchErr != nil {
+			r.Output = out
+			r.Error = operationError(ctx, "fetch", out, fetchErr)
+			return r
+		}
+	}
+
+	out, err := gitCmd(ctx, repoPath, "merge", "--ff-only", upstream)
+	r.Output = out
+	if err != nil {
+		r.Error = operationError(ctx, "merge", out, err)
 	}
 	return r
 }
 
 func Fetch(ctx context.Context, name, repoPath string) *OperationResult {
-	out, err := gitCmd(ctx, repoPath, "fetch", "--all")
+	out, err := gitCmdWithRetry(ctx, repoPath, networkRetries, "fetch", "--all", "--no-write-fetch-head")
 	r := &OperationResult{Name: name, Path: repoPath, Output: out}
 	if err != nil {
-		r.Error = fmt.Errorf("fetch: %s", out)
+		r.Error = operationError(ctx, "fetch", out, err)
 	}
 	return r
 }
@@ -245,6 +353,8 @@ func Clone(ctx context.Context, name string, spec CloneSpec) *CloneResult {
 	args = append(args, "--", spec.Remote, targetPath)
 
 	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
+	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.CombinedOutput()
 	r.Output = strings.TrimSpace(string(out))
 	if err != nil {
@@ -255,13 +365,21 @@ func Clone(ctx context.Context, name string, spec CloneSpec) *CloneResult {
 
 // parallelDo runs f for each entry in items using bounded parallelism.
 // It collects results into a pre-allocated slice in deterministic order.
-func parallelDo[T any](ctx context.Context, items map[string]string, parallel int, f func(ctx context.Context, name string) *T) []*T {
+func parallelDo[T any](
+	ctx context.Context,
+	items map[string]string,
+	parallel int,
+	timeout time.Duration,
+	f func(ctx context.Context, name string) *T,
+	onProgress func(completed, total int, result *T),
+) []*T {
 	if parallel <= 0 {
 		parallel = 4
 	}
 
 	results := make([]*T, len(items))
 	var idx atomic.Int64
+	var completed atomic.Int64
 
 	eg, egCtx := errgroup.WithContext(ctx)
 	eg.SetLimit(parallel)
@@ -271,8 +389,19 @@ func parallelDo[T any](ctx context.Context, items map[string]string, parallel in
 		i := int(idx.Add(1)) - 1
 
 		eg.Go(func() error {
-			r := f(egCtx, name)
+			opCtx := egCtx
+			cancel := func() {}
+			if timeout > 0 {
+				opCtx, cancel = context.WithTimeout(egCtx, timeout)
+			}
+			defer cancel()
+
+			r := f(opCtx, name)
 			results[i] = r
+			if onProgress != nil {
+				done := int(completed.Add(1))
+				onProgress(done, len(items), r)
+			}
 			return nil
 		})
 	}
@@ -282,33 +411,41 @@ func parallelDo[T any](ctx context.Context, items map[string]string, parallel in
 }
 
 func GetStatuses(ctx context.Context, rootDir string, repos map[string]string, parallel int) []*RepoStatus {
-	return parallelDo(ctx, repos, parallel, func(ctx context.Context, name string) *RepoStatus {
+	return parallelDo(ctx, repos, parallel, 0, func(ctx context.Context, name string) *RepoStatus {
 		absPath := filepath.Join(rootDir, repos[name])
 		return GetStatus(ctx, name, absPath)
-	})
+	}, nil)
 }
 
 func PullAll(ctx context.Context, rootDir string, repos map[string]string, parallel int) []*OperationResult {
-	return parallelDo(ctx, repos, parallel, func(ctx context.Context, name string) *OperationResult {
+	return PullAllWithOptions(ctx, rootDir, repos, BatchOptions{Parallel: parallel})
+}
+
+func PullAllWithOptions(ctx context.Context, rootDir string, repos map[string]string, opts BatchOptions) []*OperationResult {
+	return parallelDo(ctx, repos, opts.Parallel, opts.Timeout, func(ctx context.Context, name string) *OperationResult {
 		absPath := filepath.Join(rootDir, repos[name])
 		return Pull(ctx, name, absPath)
-	})
+	}, opts.OnProgress)
 }
 
 func FetchAll(ctx context.Context, rootDir string, repos map[string]string, parallel int) []*OperationResult {
-	return parallelDo(ctx, repos, parallel, func(ctx context.Context, name string) *OperationResult {
+	return FetchAllWithOptions(ctx, rootDir, repos, BatchOptions{Parallel: parallel})
+}
+
+func FetchAllWithOptions(ctx context.Context, rootDir string, repos map[string]string, opts BatchOptions) []*OperationResult {
+	return parallelDo(ctx, repos, opts.Parallel, opts.Timeout, func(ctx context.Context, name string) *OperationResult {
 		absPath := filepath.Join(rootDir, repos[name])
 		return Fetch(ctx, name, absPath)
-	})
+	}, opts.OnProgress)
 }
 
 func CloneAll(ctx context.Context, rootDir string, specs map[string]CloneSpec, parallel int) []*CloneResult {
-	return parallelDo(ctx, toNameMap(specs), parallel, func(ctx context.Context, name string) *CloneResult {
+	return parallelDo(ctx, toNameMap(specs), parallel, 0, func(ctx context.Context, name string) *CloneResult {
 		spec := specs[name]
 		absTarget := filepath.Join(rootDir, spec.Path)
 		s := CloneSpec{Path: absTarget, Remote: spec.Remote, Branch: spec.Branch, Depth: spec.Depth}
 		return Clone(ctx, name, s)
-	})
+	}, nil)
 }
 
 func toNameMap(specs map[string]CloneSpec) map[string]string {

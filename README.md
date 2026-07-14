@@ -39,6 +39,9 @@ mrepo status
 # Pull latest for all repos
 mrepo pull
 
+# Tune network concurrency and the per-repository timeout
+mrepo pull --parallel 4 --timeout 45s
+
 # Clone missing repos + pull existing in one step
 mrepo sync
 
@@ -104,9 +107,9 @@ groups:
 |---------|-------------|
 | `mrepo status` | Show status of all repos (branch, clean/dirty/missing, ahead/behind) |
 | `mrepo clone` | Clone repos not yet on disk (`--force` to re-clone, `--depth N` for shallow) |
-| `mrepo sync` | Clone missing + pull existing in one step (`--depth N` for shallow clones) |
-| `mrepo pull` | Pull latest changes for all repos in parallel (skips missing) |
-| `mrepo fetch` | Fetch latest refs for all repos in parallel |
+| `mrepo sync` | Clone missing + pull existing (`--parallel N`, `--timeout D`, `--depth N`) |
+| `mrepo pull` | Pull in parallel with live progress and retry (`--parallel N`, `--timeout D`) |
+| `mrepo fetch` | Fetch in parallel with live progress and retry (`--parallel N`, `--timeout D`) |
 | `mrepo forall -- <cmd>` | Run a command in each repo (e.g., `mrepo forall -- make build`) |
 | `mrepo add <path>` | Register a new repo (auto-detects remote/branch) |
 | `mrepo remove <name>` | Remove a repo from config (`--delete --force` to delete directory) |

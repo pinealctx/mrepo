@@ -34,7 +34,7 @@ func pullAll(rootDir string, repos map[string]string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		existing := filterExisting(rootDir, repos)
-		results := git.PullAll(ctx, rootDir, existing, runtime.NumCPU())
+		results := git.PullAll(ctx, rootDir, existing, git.DefaultParallelism())
 		out := make(map[string]string, len(results))
 		for _, r := range results {
 			if r.Error != nil {
@@ -52,7 +52,7 @@ func fetchAllRepos(rootDir string, repos map[string]string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		existing := filterExisting(rootDir, repos)
-		fetchResults := git.FetchAll(ctx, rootDir, existing, runtime.NumCPU())
+		fetchResults := git.FetchAll(ctx, rootDir, existing, git.DefaultParallelism())
 		statuses := git.GetStatuses(ctx, rootDir, repos, runtime.NumCPU())
 		details := make(map[string]*git.RepoStatus, len(statuses))
 		for _, s := range statuses {
@@ -87,7 +87,7 @@ func cloneMissing(rootDir string, cfg *config.Config, repos map[string]string) t
 		if len(specs) == 0 {
 			return cloneMsg{results: map[string]string{}}
 		}
-		results := git.CloneAll(ctx, rootDir, specs, runtime.NumCPU())
+		results := git.CloneAll(ctx, rootDir, specs, git.DefaultParallelism())
 		out := make(map[string]string, len(results))
 		for _, r := range results {
 			if r.Error != nil {
@@ -114,7 +114,7 @@ func syncAll(rootDir string, cfg *config.Config, repos map[string]string) tea.Cm
 			cloneSpecs[name] = git.CloneSpec{Path: repo.Path, Remote: repo.Remote, Branch: repo.Branch}
 		}
 		if len(cloneSpecs) > 0 {
-			for _, r := range git.CloneAll(ctx, rootDir, cloneSpecs, runtime.NumCPU()) {
+			for _, r := range git.CloneAll(ctx, rootDir, cloneSpecs, git.DefaultParallelism()) {
 				if r.Error != nil {
 					out[r.Name] = fmt.Sprintf("CLONE FAIL: %s", r.Error)
 				} else {
@@ -124,7 +124,7 @@ func syncAll(rootDir string, cfg *config.Config, repos map[string]string) tea.Cm
 		}
 		existing := filterExisting(rootDir, repos)
 		if len(existing) > 0 {
-			for _, r := range git.PullAll(ctx, rootDir, existing, runtime.NumCPU()) {
+			for _, r := range git.PullAll(ctx, rootDir, existing, git.DefaultParallelism()) {
 				if r.Error != nil {
 					out[r.Name] = fmt.Sprintf("PULL FAIL: %s", r.Error)
 				} else if _, has := out[r.Name]; !has {

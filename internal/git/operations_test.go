@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -330,5 +331,76 @@ func TestGetDiffFilesParsesExpandedUntrackedFiles(t *testing.T) {
 	}
 	if files[1].Status != "?" || files[1].Path != "internal/infra/seqalloc/b.go" {
 		t.Fatalf("second file = %+v", files[1])
+	}
+}
+
+func TestIsTransientGitError(t *testing.T) {
+	for _, output := range []string{
+		"OpenSSL SSL_connect: SSL_ERROR_SYSCALL",
+		"fatal: unable to access remote: connection reset by peer",
+		"error: cannot lock ref 'refs/remotes/origin/main'",
+	} {
+		if !isTransientGitError(output) {
+			t.Errorf("expected transient error: %q", output)
+		}
+	}
+	if isTransientGitError("fatal: repository not found") {
+		t.Error("repository-not-found should not be retried")
+	}
+}
+
+func TestPullDoesNotDependOnFetchHead(t *testing.T) {
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	source := filepath.Join(root, "source")
+	work := filepath.Join(root, "work")
+
+	runGitTest(t, root, "init", "--bare", remote)
+	runGitTest(t, root, "init", "--initial-branch=main", source)
+	runGitTest(t, source, "config", "user.name", "mrepo test")
+	runGitTest(t, source, "config", "user.email", "mrepo@example.invalid")
+	if err := os.WriteFile(filepath.Join(source, "version.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, source, "add", "version.txt")
+	runGitTest(t, source, "commit", "-m", "initial")
+	runGitTest(t, source, "remote", "add", "origin", remote)
+	runGitTest(t, source, "push", "--set-upstream", "origin", "main")
+	runGitTest(t, root, "--git-dir="+remote, "symbolic-ref", "HEAD", "refs/heads/main")
+	runGitTest(t, root, "clone", remote, work)
+
+	if err := os.WriteFile(filepath.Join(source, "version.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, source, "add", "version.txt")
+	runGitTest(t, source, "commit", "-m", "update")
+	runGitTest(t, source, "push")
+
+	duplicateFetchHead := "0000000000000000000000000000000000000000\t\tbranch 'main' of test\n" +
+		"0000000000000000000000000000000000000000\t\tbranch 'main' of test\n"
+	if err := os.WriteFile(filepath.Join(work, ".git", "FETCH_HEAD"), []byte(duplicateFetchHead), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Pull(context.Background(), "work", work)
+	if result.Error != nil {
+		t.Fatalf("Pull() error = %v", result.Error)
+	}
+	got, err := os.ReadFile(filepath.Join(work, "version.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "two\n" {
+		t.Fatalf("version.txt = %q, want %q", got, "two\\n")
+	}
+}
+
+func runGitTest(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 }

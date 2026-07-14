@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -99,11 +100,24 @@ func Load(path string) (*Config, error) {
 		cfg.Repos["."] = repo
 	}
 
-	// Validate repo entries.
+	// Validate repo entries and prevent duplicate paths from being operated on concurrently.
+	seenPaths := make(map[string]string, len(cfg.Repos))
 	for name, repo := range cfg.Repos {
 		if err := ValidateRepo(rootDir, repo.Path, repo.Remote); err != nil {
 			return nil, fmt.Errorf("repo %q: %w", name, err)
 		}
+		absPath, err := filepath.Abs(filepath.Join(rootDir, repo.Path))
+		if err != nil {
+			return nil, fmt.Errorf("repo %q: resolve path: %w", name, err)
+		}
+		canonical := filepath.Clean(absPath)
+		if runtime.GOOS == "windows" {
+			canonical = strings.ToLower(canonical)
+		}
+		if existing, ok := seenPaths[canonical]; ok {
+			return nil, fmt.Errorf("repos %q and %q resolve to the same path %q", existing, name, repo.Path)
+		}
+		seenPaths[canonical] = name
 	}
 
 	return cfg, nil

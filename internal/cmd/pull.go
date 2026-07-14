@@ -1,10 +1,9 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
-	"runtime"
 	"sort"
+	"time"
 	"unicode/utf8"
 
 	"github.com/pinealctx/mrepo/internal/git"
@@ -29,14 +28,32 @@ var pullCmd = &cobra.Command{
 		}
 
 		existing, missing := partitionRepos(filterRepos(cfg))
+		parallel, _ := cmd.Flags().GetInt("parallel")
+		timeout, _ := cmd.Flags().GetDuration("timeout")
 
-		ctx, cancel := context.WithTimeout(context.Background(), pullTimeout)
-		defer cancel()
-
-		results := git.PullAll(ctx, rootDir, existing, runtime.NumCPU())
+		started := time.Now()
+		progress := newOperationProgress("Pulling", !jsonOutput)
+		results := git.PullAllWithOptions(cmd.Context(), rootDir, existing, git.BatchOptions{
+			Parallel:   parallel,
+			Timeout:    timeout,
+			OnProgress: progress.Update,
+		})
+		progress.Done()
 		sort.Slice(results, func(i, j int) bool {
 			return results[i].Name < results[j].Name
 		})
+		missingNames := make([]string, 0, len(missing))
+		for name := range missing {
+			missingNames = append(missingNames, name)
+		}
+		sort.Strings(missingNames)
+
+		failed := 0
+		for _, r := range results {
+			if r.Error != nil {
+				failed++
+			}
+		}
 
 		if jsonOutput {
 			out := make([]jsonPull, 0, len(results)+len(missing))
@@ -47,28 +64,40 @@ var pullCmd = &cobra.Command{
 				}
 				out = append(out, jp)
 			}
-			for name := range missing {
+			for _, name := range missingNames {
 				out = append(out, jsonPull{Name: name, Error: "not cloned"})
 			}
-			return printJSON(out)
+			if err := printJSON(out); err != nil {
+				return err
+			}
+			if failed > 0 {
+				return fmt.Errorf("pull: %d repositories failed", failed)
+			}
+			return nil
 		}
 
-		t := newResultTable()
+		rows := make([]operationRow, 0, len(results)+len(missing))
+		succeeded := 0
 
 		for _, r := range results {
 			dn := displayRepoName(r.Name)
 			if r.Error != nil {
-				t.Row(errorIcon(), dn, errorStyle.Render(truncate(r.Error.Error(), 80)))
+				rows = append(rows, operationRow{Icon: errorIcon(), Name: dn, Result: operationErrorSummary(r.Error), ResultStyle: errorStyle})
 			} else {
-				t.Row(successIcon(), dn, dimStyle.Render(truncate(r.Output, 80)))
+				succeeded++
+				rows = append(rows, operationRow{Icon: successIcon(), Name: dn, Result: operationOutputSummary(r.Output, "up to date"), ResultStyle: dimStyle})
 			}
 		}
 
-		for name := range missing {
-			t.Row(warnIcon(), displayRepoName(name), dimStyle.Render("not cloned (use 'mrepo sync')"))
+		for _, name := range missingNames {
+			rows = append(rows, operationRow{Icon: warnIcon(), Name: displayRepoName(name), Result: "not cloned (use 'mrepo sync')", ResultStyle: dimStyle})
 		}
 
-		fmt.Println(t.Render())
+		fmt.Println(renderOperationTable(rows))
+		printOperationSummary("Pull complete", succeeded, failed, len(missing), time.Since(started))
+		if failed > 0 {
+			return fmt.Errorf("pull: %d repositories failed", failed)
+		}
 		return nil
 	},
 }
@@ -87,5 +116,7 @@ func truncate(s string, maxRunes int) string {
 
 func init() {
 	pullCmd.Flags().BoolVar(&jsonOutput, "json", false, "output as JSON")
+	pullCmd.Flags().Int("parallel", defaultNetworkParallel(), "maximum concurrent pulls")
+	pullCmd.Flags().Duration("timeout", pullTimeout, "timeout for each repository")
 	rootCmd.AddCommand(pullCmd)
 }

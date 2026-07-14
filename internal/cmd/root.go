@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"time"
 
@@ -52,7 +54,9 @@ func init() {
 }
 
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -104,7 +108,7 @@ func printJSON(v any) error {
 // newResultTable creates a styled table for displaying operation results.
 func newResultTable() *table.Table {
 	return table.New().
-		Width(80).
+		Width(outputWidth()).
 		Border(lipgloss.Border{}).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			return lipgloss.NewStyle()
@@ -115,7 +119,7 @@ func newResultTable() *table.Table {
 func newHeaderTable(headers ...string) *table.Table {
 	return table.New().
 		Headers(headers...).
-		Width(80).
+		Width(outputWidth()).
 		Border(lipgloss.NormalBorder()).
 		BorderTop(false).BorderBottom(false).
 		BorderLeft(false).BorderRight(false).

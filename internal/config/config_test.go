@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -232,6 +233,20 @@ func TestLoadRejectsEscapingPath(t *testing.T) {
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("expected Load to reject path traversal")
+	}
+}
+
+func TestLoadRejectsDuplicateRepoPaths(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".repos.toml")
+	data := []byte("version = 1\n[repos.first]\npath = \"services/api\"\n[repos.second]\npath = \"services/./api\"\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "resolve to the same path") {
+		t.Fatalf("Load() error = %v, want duplicate-path error", err)
 	}
 }
 
